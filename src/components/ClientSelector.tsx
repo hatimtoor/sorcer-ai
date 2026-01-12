@@ -11,7 +11,13 @@ interface Client {
   company_name: string
 }
 
-export default function ClientSelector() {
+// 1. Added the Interface for props
+interface ClientSelectorProps {
+  onClientSelect: (client: Client) => void
+}
+
+// 2. Updated the function to accept the prop
+export default function ClientSelector({ onClientSelect }: ClientSelectorProps) {
   const [clients, setClients] = useState<Client[]>([])
   const [search, setSearch] = useState('')
   const [filteredClients, setFilteredClients] = useState<Client[]>([])
@@ -25,8 +31,6 @@ export default function ClientSelector() {
 
   const dropdownRef = useRef<HTMLDivElement>(null)
   const router = useRouter()
-
-  /* ---------- existing logic stays exactly the same ---------- */
 
   useEffect(() => {
     const fetchClients = async () => {
@@ -55,10 +59,13 @@ export default function ClientSelector() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // 3. Modified to trigger the callback
   const handleSelect = (client: Client) => {
+    onClientSelect(client)
     router.push(`/clients/${client.id}/dashboard`)
   }
 
+  // 4. Modified to trigger the callback after creation
   const handleCreate = async () => {
     if (!newClient.full_name || !newClient.email_address) {
       setStatus('Full name and email are required')
@@ -82,21 +89,27 @@ export default function ClientSelector() {
       return
     }
 
+    onClientSelect(data[0])
     router.push(`/clients/${data[0].id}/dashboard`)
   }
 
   /* ---------- Floating mouse-reactive stars ---------- */
 
-  const stars = Array.from({ length: 60 }, () => ({
-    x: Math.random() * window.innerWidth,
-    y: Math.random() * window.innerHeight
-  }))
+  // Added check for window object to prevent build errors in Next.js
+  const [stars] = useState(() => 
+    typeof window !== 'undefined' 
+      ? Array.from({ length: 60 }, () => ({
+          x: Math.random() * window.innerWidth,
+          y: Math.random() * window.innerHeight
+        }))
+      : []
+  )
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const elements = document.getElementsByClassName('star')
     for (let i = 0; i < elements.length; i++) {
       const star = elements[i] as HTMLElement
-      const speed = 0.08 // increased speed
+      const speed = 0.08
       const dx = (e.clientX - star.offsetLeft) * speed
       const dy = (e.clientY - star.offsetTop) * speed
       star.style.transform = `translate(${dx}px, ${dy}px)`
@@ -117,8 +130,6 @@ export default function ClientSelector() {
       }}
       onMouseMove={handleMouseMove}
     >
-  
-      {/* floating stars (unchanged) */}
       {stars.map((s, i) => (
         <div
           key={i}
@@ -136,7 +147,7 @@ export default function ClientSelector() {
           }}
         />
       ))}
-  
+
       {/* -------- BLUE GLASS CARD 1 -------- */}
       <div
         style={{
@@ -163,11 +174,11 @@ export default function ClientSelector() {
             animation: 'sweep 7s linear infinite'
           }}
         />
-  
+
         <h2 style={{ textAlign: 'center', marginBottom: 6, color: '#93c5fd' }}>
           Select Existing Client
         </h2>
-  
+
         <div ref={dropdownRef}>
           <input
             type="text"
@@ -190,12 +201,8 @@ export default function ClientSelector() {
               boxShadow:
                 'inset 0 0 10px rgba(30,58,138,0.6), 0 0 12px rgba(59,130,246,0.25)'
             }}
-            onFocus={(e) => (e.currentTarget.style.boxShadow =
-              '0 0 18px rgba(59,130,246,0.6), inset 0 0 12px rgba(30,58,138,0.8)')}
-            onBlur={(e) => (e.currentTarget.style.boxShadow =
-              'inset 0 0 10px rgba(30,58,138,0.6), 0 0 12px rgba(59,130,246,0.25)')}
           />
-  
+
           {dropdownOpen && filteredClients.length > 0 && (
             <ul
               style={{
@@ -231,7 +238,7 @@ export default function ClientSelector() {
           )}
         </div>
       </div>
-  
+
       {/* -------- BLUE GLASS CARD 2 -------- */}
       <div
         style={{
@@ -240,10 +247,10 @@ export default function ClientSelector() {
           borderRadius: 20,
           background: 'rgba(12, 24, 60, 0.65)',
           backdropFilter: 'blur(16px)',
-          border: '1px solid rgba(96,165,250,0.35)',
+          border: '1px solid rgba(96, 165, 250, 0.35)',
           color: 'white',
           position: 'relative',
-          boxShadow: '0 0 28px rgba(59,130,246,0.35)'
+          boxShadow: '0 0 28px rgba(59, 130, 246, 0.35)'
         }}
       >
         <div
@@ -258,13 +265,11 @@ export default function ClientSelector() {
             animation: 'sweep 7s linear infinite'
           }}
         />
-  
+
         <h2 style={{ textAlign: 'center', marginBottom: 6, color: '#bae6fd' }}>
           Create New Client
         </h2>
-  
-        {/* Stylish Inputs */}
-  
+
         <input
           type="text"
           placeholder="Full Name"
@@ -278,12 +283,12 @@ export default function ClientSelector() {
             padding: '10px 14px',
             borderRadius: 14,
             border: '1px solid rgba(147,197,253,0.5)',
-            background: 'rgba(15,23,42,0.65)',
+            background: 'rgba(15, 23, 42, 0.65)',
             color: 'white',
             boxShadow: 'inset 0 0 10px rgba(30,58,138,0.6)'
           }}
         />
-  
+
         <input
           type="email"
           placeholder="Email Address"
@@ -297,12 +302,12 @@ export default function ClientSelector() {
             padding: '10px 14px',
             borderRadius: 14,
             border: '1px solid rgba(147,197,253,0.5)',
-            background: 'rgba(15,23,42,0.65)',
+            background: 'rgba(15, 23, 42, 0.65)',
             color: 'white',
             boxShadow: 'inset 0 0 10px rgba(30,58,138,0.6)'
           }}
         />
-  
+
         <input
           type="text"
           placeholder="Company Name"
@@ -316,12 +321,12 @@ export default function ClientSelector() {
             padding: '10px 14px',
             borderRadius: 14,
             border: '1px solid rgba(147,197,253,0.5)',
-            background: 'rgba(15,23,42,0.65)',
+            background: 'rgba(15, 23, 42, 0.65)',
             color: 'white',
             boxShadow: 'inset 0 0 10px rgba(30,58,138,0.6)'
           }}
         />
-  
+
         <button
           onClick={handleCreate}
           style={{
@@ -341,14 +346,14 @@ export default function ClientSelector() {
           Create Client
         </button>
       </div>
-  
+
       <style jsx>{`
         @keyframes sweep {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }
         }
       `}</style>
-  
+
       <p style={{ position: 'absolute', bottom: 20, color: '#e0f2fe' }}>{status}</p>
     </div>
   )
