@@ -20,7 +20,7 @@ export default function LoginPage() {
     return () => clearTimeout(t)
   }, [])
 
-  // ⭐ floating stars like signup page
+  // ⭐ floating stars logic
   useEffect(() => {
     const canvas = starsRef.current
     if (!canvas) return
@@ -53,6 +53,9 @@ export default function LoginPage() {
     window.addEventListener('mousemove', move)
 
     function animate() {
+      // THE FIX: Check if ctx exists before clearing or drawing
+      if (!ctx || !canvas) return
+
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
       stars.forEach(star => {
@@ -94,7 +97,6 @@ export default function LoginPage() {
     }
 
     setStatus('Login successful! Redirecting...')
-
     router.push('/clients')
   }
 
@@ -110,7 +112,6 @@ export default function LoginPage() {
         overflow: 'hidden'
       }}
     >
-      {/* cinematic fade screen */}
       <div
         style={{
           position: 'fixed',
@@ -123,7 +124,6 @@ export default function LoginPage() {
         }}
       />
 
-      {/* floating stars */}
       <canvas
         ref={starsRef}
         style={{
@@ -133,7 +133,6 @@ export default function LoginPage() {
         }}
       />
 
-      {/* nebula glow */}
       <div
         style={{
           position: 'absolute',
@@ -148,7 +147,6 @@ export default function LoginPage() {
         } as any}
       />
 
-      {/* LOGIN CARD */}
       <div
         style={{
           background: 'rgba(0,0,0,0.65)',
@@ -186,7 +184,6 @@ export default function LoginPage() {
           }}
         />
 
-        {/* password with eye toggle */}
         <div style={{ position: 'relative', width: '100%', margin: '10px 0' }}>
           <input
             type={passwordVisible ? 'text' : 'password'}
