@@ -21,7 +21,7 @@ export default function StaffSignUp() {
     return () => clearTimeout(t)
   }, [])
 
-  // ⭐ Floating reactive stars (slower motion)
+  // ⭐ Floating reactive stars
   useEffect(() => {
     const canvas = starsRef.current
     if (!canvas) return
@@ -47,7 +47,6 @@ export default function StaffSignUp() {
     let my = 0
 
     const move = (e: MouseEvent) => {
-      // ⬇️ slowed star reaction (was /60)
       mx = (e.clientX - canvas.width / 2) / 95
       my = (e.clientY - canvas.height / 2) / 95
     }
@@ -55,6 +54,9 @@ export default function StaffSignUp() {
     window.addEventListener('mousemove', move)
 
     function animate() {
+      // THE FIX: Added null check for ctx and canvas to satisfy TypeScript build
+      if (!ctx || !canvas) return
+
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
       stars.forEach(star => {
@@ -97,14 +99,9 @@ export default function StaffSignUp() {
         authError.message?.toLowerCase().includes('registered')
       ) {
         setStatus('⚠️ User already exists — please log in instead.')
-
-        setTimeout(() => {
-          router.push('/login')
-        }, 1500)
-
+        setTimeout(() => { router.push('/login') }, 1500)
         return
       }
-
       setStatus(`❌ Error: ${authError.message}`)
       return
     }
@@ -114,20 +111,11 @@ export default function StaffSignUp() {
       .insert([{ full_name: fullName, email, role }])
 
     if (dbError) {
-      if (
-        dbError.message
-          ?.toLowerCase()
-          .includes('duplicate key value violates unique constraint')
-      ) {
+      if (dbError.message?.toLowerCase().includes('duplicate key value violates unique constraint')) {
         setStatus('⚠️ User already exists — please log in instead.')
-
-        setTimeout(() => {
-          router.push('/login')
-        }, 1500)
-
+        setTimeout(() => { router.push('/login') }, 1500)
         return
       }
-
       setStatus(`DB Error: ${dbError.message}`)
       return
     }
@@ -137,191 +125,28 @@ export default function StaffSignUp() {
   }
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'black',
-        position: 'relative',
-        overflow: 'hidden'
-      }}
-    >
-      <div
-        style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'black',
-          opacity: loaded ? 0 : 1,
-          transition: 'opacity 1.2s ease-out',
-          pointerEvents: 'none',
-          zIndex: 999
-        }}
-      />
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'black', position: 'relative', overflow: 'hidden' }}>
+      <div style={{ position: 'fixed', inset: 0, background: 'black', opacity: loaded ? 0 : 1, transition: 'opacity 1.2s ease-out', pointerEvents: 'none', zIndex: 999 }} />
+      <canvas ref={starsRef} style={{ position: 'absolute', inset: 0, zIndex: 0 }} />
+      <div style={{ position: 'absolute', width: '200%', height: '200%', background: 'radial-gradient(circle at 30% 30%, rgba(0,120,255,0.18), transparent 60%), radial-gradient(circle at 70% 70%, rgba(0,40,160,0.18), transparent 60%)', filter: 'blur(110px)', animation: 'slowspin 40s linear infinite', opacity: 0.6, zIndex: 0 } as any} />
 
-      <canvas
-        ref={starsRef}
-        style={{
-          position: 'absolute',
-          inset: 0,
-          zIndex: 0
-        }}
-      />
-
-      <div
-        style={{
-          position: 'absolute',
-          width: '200%',
-          height: '200%',
-          background:
-            'radial-gradient(circle at 30% 30%, rgba(0,120,255,0.18), transparent 60%), radial-gradient(circle at 70% 70%, rgba(0,40,160,0.18), transparent 60%)',
-          filter: 'blur(110px)',
-          animation: 'slowspin 40s linear infinite',
-          opacity: 0.6,
-          zIndex: 0
-        } as any}
-      />
-
-      <div
-        style={{
-          background: 'rgba(0,0,0,0.65)',
-          padding: 28,
-          borderRadius: 20,
-          border: '1px solid rgba(0,153,255,0.25)',
-          boxShadow:
-            '0 0 25px rgba(0,153,255,0.35), inset 0 0 20px rgba(0,0,0,0.6)',
-          width: 380,
-          textAlign: 'center',
-          color: 'white',
-          backdropFilter: 'blur(10px)',
-          zIndex: 2
-        }}
-      >
+      <div style={{ background: 'rgba(0,0,0,0.65)', padding: 28, borderRadius: 20, border: '1px solid rgba(0,153,255,0.25)', boxShadow: '0 0 25px rgba(0,153,255,0.35), inset 0 0 20px rgba(0,0,0,0.6)', width: 380, textAlign: 'center', color: 'white', backdropFilter: 'blur(10px)', zIndex: 2 }}>
         <h2 style={{ marginBottom: 14, color: '#60a5fa' }}>Staff Sign-Up</h2>
-
-        <input
-          type="text"
-          placeholder="Full Name"
-          value={fullName}
-          onChange={(e) => setFullName(e.target.value)}
-          style={{
-            display: 'block',
-            width: '100%',
-            margin: '10px 0',
-            padding: 10,
-            borderRadius: 12,
-            background: 'rgba(0,0,0,0.6)',
-            border: '1px solid rgba(96,165,250,0.4)',
-            color: 'white'
-          }}
-        />
-
-        <input
-          type="email"
-          placeholder="Email Address"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          style={{
-            display: 'block',
-            width: '100%',
-            margin: '10px 0',
-            padding: 10,
-            borderRadius: 12,
-            background: 'rgba(0,0,0,0.6)',
-            border: '1px solid rgba(96,165,250,0.4)',
-            color: 'white'
-          }}
-        />
-
-        <div
-          style={{
-            position: 'relative',
-            width: '100%',
-            marginTop: 10,
-            marginBottom: 10
-          }}
-        >
-          <input
-            type={passwordVisible ? 'text' : 'password'}
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '10px 38px 10px 10px',
-              borderRadius: 12,
-              background: 'rgba(0,0,0,0.6)',
-              border: '1px solid rgba(96,165,250,0.4)',
-              color: 'white'
-            }}
-          />
-
-          <span
-            onClick={() => setPasswordVisible(!passwordVisible)}
-            style={{
-              position: 'absolute',
-              right: 10,
-              top: '50%',
-              transform: 'translateY(-50%)',
-              cursor: 'pointer',
-              fontSize: 18,
-              userSelect: 'none'
-            }}
-          >
-            {passwordVisible ? '👁️' : '👁️‍🗨️'}
-          </span>
+        <input type="text" placeholder="Full Name" value={fullName} onChange={(e) => setFullName(e.target.value)} style={{ display: 'block', width: '100%', margin: '10px 0', padding: 10, borderRadius: 12, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(96,165,250,0.4)', color: 'white' }} />
+        <input type="email" placeholder="Email Address" value={email} onChange={(e) => setEmail(e.target.value)} style={{ display: 'block', width: '100%', margin: '10px 0', padding: 10, borderRadius: 12, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(96,165,250,0.4)', color: 'white' }} />
+        <div style={{ position: 'relative', width: '100%', marginTop: 10, marginBottom: 10 }}>
+          <input type={passwordVisible ? 'text' : 'password'} placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} style={{ width: '100%', padding: '10px 38px 10px 10px', borderRadius: 12, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(96,165,250,0.4)', color: 'white' }} />
+          <span onClick={() => setPasswordVisible(!passwordVisible)} style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', fontSize: 18, userSelect: 'none' }}>{passwordVisible ? '👁️' : '👁️‍🗨️'}</span>
         </div>
-
-        <select
-          value={role}
-          onChange={(e) => setRole(e.target.value)}
-          style={{
-            display: 'block',
-            width: '100%',
-            margin: '10px 0',
-            padding: 10,
-            borderRadius: 12,
-            background: 'rgba(0,0,0,0.6)',
-            border: '1px solid rgba(96,165,250,0.4)',
-            color: 'white'
-          }}
-        >
+        <select value={role} onChange={(e) => setRole(e.target.value)} style={{ display: 'block', width: '100%', margin: '10px 0', padding: 10, borderRadius: 12, background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(96,165,250,0.4)', color: 'white' }}>
           <option value="staff">Staff</option>
           <option value="admin">Admin</option>
           <option value="manager">Manager</option>
         </select>
-
-        <button
-          onClick={handleSignUp}
-          style={{
-            marginTop: 12,
-            width: '100%',
-            padding: '12px 16px',
-            borderRadius: 14,
-            border: 'none',
-            background:
-              'linear-gradient(135deg, #0ea5e9 0%, #3b82f6 60%, #60a5fa 100%)',
-            color: 'white',
-            fontWeight: 600,
-            cursor: 'pointer',
-            boxShadow: '0 0 14px rgba(59,130,246,0.8)'
-          }}
-        >
-          Sign Up
-        </button>
-
+        <button onClick={handleSignUp} style={{ marginTop: 12, width: '100%', padding: '12px 16px', borderRadius: 14, border: 'none', background: 'linear-gradient(135deg, #0ea5e9 0%, #3b82f6 60%, #60a5fa 100%)', color: 'white', fontWeight: 600, cursor: 'pointer', boxShadow: '0 0 14px rgba(59,130,246,0.8)' }}>Sign Up</button>
         <p style={{ marginTop: 10 }}>{status}</p>
       </div>
-
-      <style>
-        {`
-          @keyframes slowspin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-          }
-        `}
-      </style>
+      <style>{`@keyframes slowspin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
     </div>
   )
 }
