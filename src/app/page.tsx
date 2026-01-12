@@ -47,6 +47,9 @@ export default function Home() {
     window.addEventListener('mousemove', onMove)
 
     function animate() {
+      // THE FIX: Check if ctx and canvas still exist before drawing
+      if (!ctx || !canvas) return
+
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
       stars.forEach(star => {
@@ -126,9 +129,7 @@ export default function Home() {
         } as any}
       />
 
-      {/* 🚫 REMOVED THE GRID LAYER */}
-
-      {/* center card — unchanged */}
+      {/* center card */}
       <div
         style={{
           background: 'rgba(0,0,0,0.65)',
