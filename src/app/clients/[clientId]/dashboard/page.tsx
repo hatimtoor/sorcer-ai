@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useEffect, useState } from 'react'
+import { use, useEffect, useState, useMemo } from 'react'
 import { supabase } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import { useAuthGuard } from '@/hooks/useAuthGuard'
@@ -46,18 +46,25 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
 
   const [client, setClient] = useState<Client | null>(null)
   const [automations, setAutomations] = useState<Automation[]>([])
-  const [selected, setSelected] = useState<Automation | null>(null)
+  const [selectedAutoId, setSelectedAutoId] = useState<string | null>(null)
   const [credentials, setCredentials] = useState<Credential[]>([])
   const [visibleCreds, setVisibleCreds] = useState<Record<string, boolean>>({})
   
-  // States for Credential Editing
+  // Credentials Edit State
   const [editingCredId, setEditingCredId] = useState<string | null>(null)
   const [editCredName, setEditCredName] = useState('')
   const [editCredValue, setEditCredValue] = useState('')
 
-  // Expansion States
+  // Automations Edit State
+  const [editingAutoId, setEditingAutoId] = useState<string | null>(null)
+  const [editAutoName, setEditAutoName] = useState('')
+
   const [autosExpanded, setAutosExpanded] = useState(false)
   const [credsExpanded, setCredsExpanded] = useState(false)
+
+  const selected = useMemo(() => 
+    automations.find(a => a.id === selectedAutoId) || null
+  , [selectedAutoId, automations])
 
   const loadClient = async () => {
     const { data } = await supabase.from('clients').select('*').eq('id', clientId).single()
@@ -79,7 +86,7 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
       }
     }
     setAutomations(data)
-    if (!selected && data.length > 0) setSelected(data[0])
+    if (!selectedAutoId && data.length > 0) setSelectedAutoId(data[0].id)
   }
 
   const loadCredentials = async () => {
@@ -100,29 +107,70 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
 
   const toggleCredVisibility = (id: string) => setVisibleCreds(prev => ({ ...prev, [id]: !prev[id] }))
 
-  // --- ACTIONS ---
-  const deleteCredential = async (id: string) => {
-    if (!confirm('Delete this credential permanently?')) return
-    await supabase.from('credentials').delete().eq('id', id)
-    setCredentials(prev => prev.filter(c => c.id !== id))
+  /* --- AUTOMATION ACTIONS --- */
+  const performAutoSave = async (id: string) => {
+    const { error } = await supabase.from('automation_clarity').update({ name: editAutoName }).eq('id', id)
+    if (error) {
+      alert(`Error updating automation: ${error.message}`)
+      return
+    }
+    setAutomations(prev => prev.map(a => a.id === id ? { ...a, name: editAutoName } : a))
+    setEditingAutoId(null)
+  }
+
+  const handleAutoKeyDown = (e: React.KeyboardEvent, id: string) => {
+    if (e.key === 'Enter') performAutoSave(id)
+    else if (e.key === 'Escape') setEditingAutoId(null)
+  }
+
+  /* --- CREDENTIAL ACTIONS --- */
+  const saveCredentialUpdate = async (id: string) => {
+    // 1. Database Update First
+    const { error } = await supabase
+      .from('credentials')
+      .update({ name: editCredName, value: editCredValue })
+      .eq('id', id)
+
+    if (error) {
+      console.error('Credential Update Error:', error)
+      alert(`Failed to save credential: ${error.message}`)
+      return
+    }
+
+    // 2. Only update UI if DB succeeds
+    setCredentials(prev => prev.map(c => c.id === id ? { ...c, name: editCredName, value: editCredValue } : c))
+    setEditingCredId(null)
+  }
+
+  const handleCredKeyDown = (e: React.KeyboardEvent, id: string) => {
+    if (e.key === 'Enter') saveCredentialUpdate(id)
+    else if (e.key === 'Escape') setEditingCredId(null)
   }
 
   const startEditingCred = (cred: Credential) => {
     setEditingCredId(cred.id); setEditCredName(cred.name); setEditCredValue(cred.value);
   }
 
-  const saveCredentialUpdate = async (id: string) => {
-    await supabase.from('credentials').update({ name: editCredName, value: editCredValue }).eq('id', id)
-    setCredentials(prev => prev.map(c => c.id === id ? { ...c, name: editCredName, value: editCredValue } : c))
-    setEditingCredId(null)
+  const deleteCredential = async (id: string) => {
+    if (!confirm('Delete this credential permanently?')) return
+    const { error } = await supabase.from('credentials').delete().eq('id', id)
+    if (error) {
+      alert(`Error: ${error.message}`)
+      return
+    }
+    setCredentials(prev => prev.filter(c => c.id !== id))
   }
 
   const deleteAutomation = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation(); 
     if (!confirm('Delete this automation permanently?')) return
-    await supabase.from('automation_clarity').delete().eq('id', id)
+    const { error } = await supabase.from('automation_clarity').delete().eq('id', id)
+    if (error) {
+      alert(`Could not delete: ${error.message}`)
+      return
+    }
     setAutomations(prev => prev.filter(a => a.id !== id))
-    if (selected?.id === id) setSelected(null)
+    if (selectedAutoId === id) setSelectedAutoId(null)
   }
 
   const colors = {
@@ -143,26 +191,15 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
         .dashboard-container { animation: fadeIn 0.5s ease-out; width: 100%; max-width: 100vw; overflow-x: hidden; }
         
         .expand-action-bar { 
-          width: 100%; 
-          margin-top: 16px; 
-          padding: 12px; 
-          background: rgba(15, 23, 42, 0.8); 
-          border: 1px solid ${colors.border}; 
-          border-radius: 8px; 
-          color: #38bdf8 !important; 
-          font-weight: 700; 
-          font-size: 11px; 
-          text-transform: uppercase; 
-          letter-spacing: 0.1em; 
-          cursor: pointer; 
-          transition: 0.2s;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          width: 100%; margin-top: 16px; padding: 12px; background: rgba(15, 23, 42, 0.8); 
+          border: 1px solid ${colors.border}; border-radius: 8px; color: #38bdf8 !important; 
+          font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; 
+          cursor: pointer; transition: 0.2s; display: flex; align-items: center; justify-content: center;
         }
         .expand-action-bar:hover { background: rgba(56, 189, 248, 0.1); color: #fff !important; }
         .icon-btn { opacity: 0.5; transition: 0.2s; cursor: pointer; background: none; border: none; color: #fff; padding: 4px; }
         .icon-btn:hover { opacity: 1; transform: scale(1.1); }
+        .auto-input { background: #000; color: #fff; border: 1px solid ${colors.accent}; padding: 6px 10px; border-radius: 6px; font-size: 12px; width: 100%; outline: none; }
       `}</style>
 
       {authLoading ? (
@@ -170,7 +207,6 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
       ) : (
         <div className="dashboard-container" style={{ minHeight: '100vh', backgroundColor: colors.bg, color: colors.textMain, padding: '24px 20px', fontFamily: 'Inter, sans-serif' }}>
           
-          {/* UPDATED HEADER: Full Client Info */}
           <header style={{ borderBottom: `1px solid ${colors.border}`, paddingBottom: 24, marginBottom: 32 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
@@ -190,30 +226,32 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
 
           <main style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 320px) 1fr', gap: 24, alignItems: 'start' }}>
             
-            {/* SIDEBAR */}
             <aside style={{ background: 'rgba(15, 23, 42, 0.4)', border: `1px solid ${colors.border}`, borderRadius: 16, padding: 16 }}>
               <h3 style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', marginBottom: 16, letterSpacing: '0.1em' }}>Workflows</h3>
               {displayedAutos.map(a => (
-                <div key={a.id} onClick={() => setSelected(a)} style={{ padding: '12px', marginBottom: 8, borderRadius: 10, cursor: 'pointer', background: selected?.id === a.id ? 'rgba(56, 189, 248, 0.1)' : 'transparent', border: `1px solid ${selected?.id === a.id ? colors.accent : 'transparent'}` }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ flex: 1, overflow: 'hidden' }}>
-                      <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Untitled'}</div>
+                <div key={a.id} onClick={() => setSelectedAutoId(a.id)} style={{ padding: '12px', marginBottom: 8, borderRadius: 10, cursor: 'pointer', background: selectedAutoId === a.id ? 'rgba(56, 189, 248, 0.1)' : 'transparent', border: `1px solid ${selectedAutoId === a.id ? colors.accent : 'transparent'}` }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    {editingAutoId === a.id ? (
+                      <div style={{ display: 'flex', gap: 4, flex: 1 }}>
+                        <input autoFocus className="auto-input" value={editAutoName} onChange={(e) => setEditAutoName(e.target.value)} onKeyDown={(e) => handleAutoKeyDown(e, a.id)} onClick={(e) => e.stopPropagation()} />
+                        <button onClick={(e) => { e.stopPropagation(); performAutoSave(a.id); }} style={{ background: 'none', border: 'none', cursor: 'pointer' }}>✅</button>
+                      </div>
+                    ) : (
+                      <div style={{ flex: 1, overflow: 'hidden' }}>
+                        <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Untitled'}</div>
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      {editingAutoId !== a.id && <button className="icon-btn" style={{ fontSize: 12 }} onClick={(e) => { e.stopPropagation(); setEditingAutoId(a.id); setEditAutoName(a.name || ''); }}>✏️</button>}
+                      <button onClick={(e) => deleteAutomation(e, a.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14 }}>🗑️</button>
                     </div>
-                    <button onClick={(e) => deleteAutomation(e, a.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14 }}>🗑️</button>
                   </div>
                 </div>
               ))}
-              {automations.length > 5 && (
-                <div className="expand-action-bar" onClick={() => setAutosExpanded(!autosExpanded)}>
-                   {autosExpanded ? '↑ SHOW LESS' : `↓ SEE ALL (${automations.length})`}
-                </div>
-              )}
             </aside>
 
-            {/* CONTENT AREA */}
             <section style={{ display: 'flex', flexDirection: 'column', gap: 24, minWidth: 0 }}>
-              
-              <div style={{ background: colors.card, border: `1px solid ${colors.border}`, borderRadius: 16, padding: 24, width: '100%' }}>
+              <div style={{ background: colors.card, border: `1px solid ${colors.border}`, borderRadius: 16, padding: 24 }}>
                 <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Workflow Details</h3>
                 {selected ? (
                   <pre style={{ background: 'rgba(2, 6, 23, 0.6)', padding: 16, borderRadius: 12, fontSize: 12, color: colors.textMuted, maxHeight: '400px', overflow: 'auto', border: '1px solid rgba(255,255,255,0.05)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
@@ -222,10 +260,8 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
                 ) : <p style={{ color: colors.textMuted }}>Select a workflow.</p>}
               </div>
 
-              {/* CREDENTIALS SECTION with Edit/Delete */}
-              <div style={{ background: colors.card, border: `1px solid ${colors.border}`, borderRadius: 16, padding: 24, width: '100%' }}>
+              <div style={{ background: colors.card, border: `1px solid ${colors.border}`, borderRadius: 16, padding: 24 }}>
                 <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>System Credentials</h3>
-                
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
                   {displayedCreds.map(c => {
                     const isVisible = visibleCreds[c.id] || false;
@@ -234,8 +270,8 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
                       <div key={c.id} style={{ padding: '16px', borderRadius: 12, background: 'rgba(2, 6, 23, 0.4)', border: `1px solid ${isEditing ? colors.accent : 'rgba(56, 189, 248, 0.1)'}` }}>
                         {isEditing ? (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                            <input style={{ background: '#000', color: '#fff', border: `1px solid ${colors.border}`, padding: '8px', borderRadius: 4, fontSize: 12 }} value={editCredName} onChange={e => setEditCredName(e.target.value)} />
-                            <input style={{ background: '#000', color: '#fff', border: `1px solid ${colors.border}`, padding: '8px', borderRadius: 4, fontSize: 12 }} value={editCredValue} onChange={e => setEditCredValue(e.target.value)} />
+                            <input autoFocus className="auto-input" value={editCredName} onChange={e => setEditCredName(e.target.value)} onKeyDown={(e) => handleCredKeyDown(e, c.id)} />
+                            <input className="auto-input" value={editCredValue} onChange={e => setEditCredValue(e.target.value)} onKeyDown={(e) => handleCredKeyDown(e, c.id)} />
                             <div style={{ display: 'flex', gap: 8 }}>
                               <button onClick={() => saveCredentialUpdate(c.id)} style={{ flex: 1, background: colors.accent, padding: '6px', border: 'none', borderRadius: 4, fontWeight: 700, cursor: 'pointer' }}>SAVE</button>
                               <button onClick={() => setEditingCredId(null)} style={{ flex: 1, background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', padding: '6px', borderRadius: 4, cursor: 'pointer' }}>CANCEL</button>
@@ -260,12 +296,6 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
                     )
                   })}
                 </div>
-
-                {credentials.length > 3 && (
-                  <div className="expand-action-bar" onClick={() => setCredsExpanded(!credsExpanded)}>
-                    {credsExpanded ? '↑ SHOW FEWER CREDENTIALS' : `↓ SEE ALL CREDENTIALS (${credentials.length})`}
-                  </div>
-                )}
               </div>
             </section>
           </main>

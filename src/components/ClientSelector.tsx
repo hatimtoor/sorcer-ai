@@ -9,14 +9,14 @@ interface Client {
   full_name: string
   email_address: string
   company_name: string
+  ghl_access_token?: string
+  ghl_location_id?: string
 }
 
-// 1. Added the Interface for props
 interface ClientSelectorProps {
   onClientSelect: (client: Client) => void
 }
 
-// 2. Updated the function to accept the prop
 export default function ClientSelector({ onClientSelect }: ClientSelectorProps) {
   const [clients, setClients] = useState<Client[]>([])
   const [search, setSearch] = useState('')
@@ -25,7 +25,9 @@ export default function ClientSelector({ onClientSelect }: ClientSelectorProps) 
   const [newClient, setNewClient] = useState({
     full_name: '',
     email_address: '',
-    company_name: ''
+    company_name: '',
+    ghl_access_token: '',
+    ghl_location_id: ''
   })
   const [status, setStatus] = useState('')
 
@@ -59,13 +61,11 @@ export default function ClientSelector({ onClientSelect }: ClientSelectorProps) 
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // 3. Modified to trigger the callback
   const handleSelect = (client: Client) => {
     onClientSelect(client)
     router.push(`/clients/${client.id}/dashboard`)
   }
 
-  // 4. Modified to trigger the callback after creation
   const handleCreate = async () => {
     if (!newClient.full_name || !newClient.email_address) {
       setStatus('Full name and email are required')
@@ -94,8 +94,6 @@ export default function ClientSelector({ onClientSelect }: ClientSelectorProps) 
   }
 
   /* ---------- Floating mouse-reactive stars ---------- */
-
-  // Added check for window object to prevent build errors in Next.js
   const [stars] = useState(() => 
     typeof window !== 'undefined' 
       ? Array.from({ length: 60 }, () => ({
@@ -114,6 +112,18 @@ export default function ClientSelector({ onClientSelect }: ClientSelectorProps) 
       const dy = (e.clientY - star.offsetTop) * speed
       star.style.transform = `translate(${dx}px, ${dy}px)`
     }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%',
+    marginTop: 8,
+    padding: '10px 14px',
+    borderRadius: 14,
+    border: '1px solid rgba(147,197,253,0.5)',
+    background: 'rgba(15, 23, 42, 0.65)',
+    color: 'white',
+    boxShadow: 'inset 0 0 10px rgba(30,58,138,0.6)',
+    outline: 'none'
   }
 
   return (
@@ -148,7 +158,7 @@ export default function ClientSelector({ onClientSelect }: ClientSelectorProps) 
         />
       ))}
 
-      {/* -------- BLUE GLASS CARD 1 -------- */}
+      {/* -------- SELECT CLIENT CARD -------- */}
       <div
         style={{
           width: 360,
@@ -167,18 +177,15 @@ export default function ClientSelector({ onClientSelect }: ClientSelectorProps) 
             position: 'absolute',
             inset: -2,
             borderRadius: 20,
-            background:
-              'linear-gradient(160deg, rgba(14,165,233,0.7), rgba(59,130,246,0.6), transparent)',
+            background: 'linear-gradient(160deg, rgba(14,165,233,0.7), rgba(59,130,246,0.6), transparent)',
             filter: 'blur(10px)',
             zIndex: -1,
             animation: 'sweep 7s linear infinite'
           }}
         />
-
         <h2 style={{ textAlign: 'center', marginBottom: 6, color: '#93c5fd' }}>
           Select Existing Client
         </h2>
-
         <div ref={dropdownRef}>
           <input
             type="text"
@@ -189,20 +196,8 @@ export default function ClientSelector({ onClientSelect }: ClientSelectorProps) 
               setDropdownOpen(true)
             }}
             onClick={() => setDropdownOpen(!dropdownOpen)}
-            style={{
-              width: '100%',
-              padding: '10px 14px',
-              marginTop: 12,
-              borderRadius: 14,
-              border: '1px solid rgba(147,197,253,0.5)',
-              background: 'rgba(15, 23, 42, 0.65)',
-              color: 'white',
-              outline: 'none',
-              boxShadow:
-                'inset 0 0 10px rgba(30,58,138,0.6), 0 0 12px rgba(59,130,246,0.25)'
-            }}
+            style={inputStyle}
           />
-
           {dropdownOpen && filteredClients.length > 0 && (
             <ul
               style={{
@@ -220,16 +215,9 @@ export default function ClientSelector({ onClientSelect }: ClientSelectorProps) 
                 <li
                   key={c.id}
                   onClick={() => handleSelect(c)}
-                  style={{
-                    padding: '8px 12px',
-                    cursor: 'pointer',
-                    borderRadius: 10
-                  }}
-                  onMouseEnter={(e) =>
-                    (e.currentTarget.style.background =
-                      'rgba(59,130,246,0.25)')}
-                  onMouseLeave={(e) =>
-                    (e.currentTarget.style.background = 'transparent')}
+                  style={{ padding: '8px 12px', cursor: 'pointer', borderRadius: 10 }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(59,130,246,0.25)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                 >
                   {c.full_name} ({c.email_address})
                 </li>
@@ -239,10 +227,10 @@ export default function ClientSelector({ onClientSelect }: ClientSelectorProps) 
         </div>
       </div>
 
-      {/* -------- BLUE GLASS CARD 2 -------- */}
+      {/* -------- CREATE NEW CLIENT CARD -------- */}
       <div
         style={{
-          width: 360,
+          width: 380,
           padding: 22,
           borderRadius: 20,
           background: 'rgba(12, 24, 60, 0.65)',
@@ -258,14 +246,12 @@ export default function ClientSelector({ onClientSelect }: ClientSelectorProps) 
             position: 'absolute',
             inset: -2,
             borderRadius: 20,
-            background:
-              'linear-gradient(200deg, rgba(96,165,250,0.7), rgba(2,132,199,0.6), transparent)',
+            background: 'linear-gradient(200deg, rgba(96,165,250,0.7), rgba(2,132,199,0.6), transparent)',
             filter: 'blur(10px)',
             zIndex: -1,
             animation: 'sweep 7s linear infinite'
           }}
         />
-
         <h2 style={{ textAlign: 'center', marginBottom: 6, color: '#bae6fd' }}>
           Create New Client
         </h2>
@@ -274,68 +260,58 @@ export default function ClientSelector({ onClientSelect }: ClientSelectorProps) 
           type="text"
           placeholder="Full Name"
           value={newClient.full_name}
-          onChange={(e) =>
-            setNewClient({ ...newClient, full_name: e.target.value })
-          }
-          style={{
-            width: '100%',
-            marginTop: 8,
-            padding: '10px 14px',
-            borderRadius: 14,
-            border: '1px solid rgba(147,197,253,0.5)',
-            background: 'rgba(15, 23, 42, 0.65)',
-            color: 'white',
-            boxShadow: 'inset 0 0 10px rgba(30,58,138,0.6)'
-          }}
+          onChange={(e) => setNewClient({ ...newClient, full_name: e.target.value })}
+          style={inputStyle}
         />
-
         <input
           type="email"
           placeholder="Email Address"
           value={newClient.email_address}
-          onChange={(e) =>
-            setNewClient({ ...newClient, email_address: e.target.value })
-          }
-          style={{
-            width: '100%',
-            marginTop: 8,
-            padding: '10px 14px',
-            borderRadius: 14,
-            border: '1px solid rgba(147,197,253,0.5)',
-            background: 'rgba(15, 23, 42, 0.65)',
-            color: 'white',
-            boxShadow: 'inset 0 0 10px rgba(30,58,138,0.6)'
-          }}
+          onChange={(e) => setNewClient({ ...newClient, email_address: e.target.value })}
+          style={inputStyle}
         />
-
         <input
           type="text"
           placeholder="Company Name"
           value={newClient.company_name}
-          onChange={(e) =>
-            setNewClient({ ...newClient, company_name: e.target.value })
-          }
-          style={{
-            width: '100%',
-            marginTop: 8,
-            padding: '10px 14px',
-            borderRadius: 14,
-            border: '1px solid rgba(147,197,253,0.5)',
-            background: 'rgba(15, 23, 42, 0.65)',
-            color: 'white',
-            boxShadow: 'inset 0 0 10px rgba(30,58,138,0.6)'
-          }}
+          onChange={(e) => setNewClient({ ...newClient, company_name: e.target.value })}
+          style={inputStyle}
+        />
+
+        <p style={{ 
+          fontSize: '0.85rem', 
+          marginTop: 18, 
+          marginBottom: 4, 
+          color: '#93c5fd', 
+          textAlign: 'center',
+          lineHeight: '1.4' 
+        }}>
+          If you think this client is going to need CRM work done please also fill out these 2 fields.
+        </p>
+
+        <input
+          type="text" // Changed from password to text as requested
+          placeholder="GHL Access Token"
+          value={newClient.ghl_access_token}
+          onChange={(e) => setNewClient({ ...newClient, ghl_access_token: e.target.value })}
+          style={inputStyle}
+        />
+        <input
+          type="text"
+          placeholder="GHL Location ID"
+          value={newClient.ghl_location_id}
+          onChange={(e) => setNewClient({ ...newClient, ghl_location_id: e.target.value })}
+          style={inputStyle}
         />
 
         <button
           onClick={handleCreate}
           style={{
             width: '100%',
-            marginTop: 12,
+            marginTop: 20,
             padding: '12px 14px',
             borderRadius: 14,
-            background:
-              'linear-gradient(135deg, #0ea5e9, #3b82f6, #60a5fa)',
+            background: 'linear-gradient(135deg, #0ea5e9, #3b82f6, #60a5fa)',
             color: 'white',
             border: 'none',
             cursor: 'pointer',
