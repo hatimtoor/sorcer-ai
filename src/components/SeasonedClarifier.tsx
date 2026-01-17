@@ -31,12 +31,9 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
   const [clarityText, setClarityText] = useState<string | null>(null)
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false)
 
-  // ---------- CREDENTIAL STATE ----------
-  const [credentialRequirements, setCredentialRequirements] = useState<any[]>([])
-  const [credentialValues, setCredentialValues] = useState<Record<string, string>>({})
-  const [showCredentialForm, setShowCredentialForm] = useState(false)
-
-  const [showField, setShowField] = useState<Record<string, boolean>>({})
+  // ---------- TASK EXECUTION STATE ----------
+  const [taskStatus, setTaskStatus] = useState<string>('')
+  const [executionResult, setExecutionResult] = useState<string | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
 
@@ -54,7 +51,7 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
   // ---------- SCROLL ----------
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, awaitingConfirmation, showCredentialForm])
+  }, [messages, awaitingConfirmation, executionResult])
 
   // ---------- LOAD MESSAGES ----------
   useEffect(() => {
@@ -71,23 +68,10 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
     fetchMessages()
   }, [clientId])
 
-  async function detectCredentialRequirementsFromGemini(clarityJson: any) {
-    const res = await fetch('/api/gemini/credential-detection', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systems: clarityJson.systems,
-        business_goal: clarityJson.business_goal
-      })
-    })
-    if (!res.ok) return []
-    const data = await res.json()
-    return data.credentials || []
-  }
 
   // ---------- SEND MESSAGE ----------
   const handleSend = async () => {
-    if (!input.trim() || awaitingConfirmation || showCredentialForm) return
+    if (!input.trim() || awaitingConfirmation || taskStatus === 'executing') return
 
     setStatus('Saving your message...')
     const { data: staffData, error: staffError } = await supabase
@@ -122,6 +106,21 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
       const textPart = aiText.split('CLARITY_READY')[1].trim()
       setClarityText(textPart)
       setAwaitingConfirmation(true)
+      
+      // Don't save the JSON clarity to chat - only save the user-friendly message before CLARITY_READY
+      const userFriendlyPart = aiText.split('CLARITY_READY')[0].trim()
+      if (userFriendlyPart) {
+        const { data: aiData, error: aiError } = await supabase
+          .from('client_messages')
+          .insert([{ client_id: clientId, message: userFriendlyPart, sender: 'ai' }])
+          .select()
+        
+        if (!aiError && aiData) {
+          setMessages(prev => [...prev, aiData[0]])
+        }
+      }
+      setStatus('')
+      return
     }
 
     const { data: aiData, error: aiError } = await supabase
@@ -154,78 +153,207 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
 
     let clarityJson: any = {}
     try { clarityJson = JSON.parse(clarityText) } catch {}
-    setStatus('Detecting required credentials...')
-    const detected = await detectCredentialRequirementsFromGemini({
-      systems: clarityJson.systems,
-      business_goal: clarityJson.business_goal
-    })
-
-    setCredentialRequirements(detected)
-    setShowCredentialForm(detected.length > 0)
+    
     setAwaitingConfirmation(false)
-    setStatus(detected.length > 0 ? 'Clarity saved. Please enter credentials.' : 'Clarity saved.')
-  }
-
-  const saveCredentials = async () => {
-    setStatus('Saving credentials...')
-    if (Object.keys(credentialValues).length === 0) {
-      setStatus('⚠️ No credentials entered')
+    setStatus('Fetching client credentials...')
+    
+    // Get client credentials from Supabase
+    const { data: clientData, error: clientError } = await supabase
+      .from('clients')
+      .select('ghl_access_token, ghl_location_id')
+      .eq('id', clientId)
+      .single()
+    
+    if (clientError || !clientData) {
+      setStatus('❌ Failed to load client credentials: ' + (clientError?.message || 'Client not found'))
       return
     }
-    const inserts = Object.entries(credentialValues).map(([key, value]) => {
-      const [system, field] = key.split(':')
-      return { client_id: clientId, name: `${system}:${field}`, value }
+    
+    if (!clientData.ghl_access_token || !clientData.ghl_location_id) {
+      setStatus('❌ Client credentials missing. Please add GHL access token and location ID.')
+      return
+    }
+    
+    // Log full token length to check if it's complete
+    console.log('Full token from Supabase:', {
+      token_length: clientData.ghl_access_token?.length || 0,
+      token_type: typeof clientData.ghl_access_token,
+      token_starts_with: clientData.ghl_access_token?.substring(0, 20) || 'empty',
+      token_ends_with: clientData.ghl_access_token?.substring(clientData.ghl_access_token.length - 20) || 'empty',
+      full_token: clientData.ghl_access_token // Log full token for debugging
     })
-
-    const { error } = await supabase.from('credentials').insert(inserts)
-    if (error) {
-      setStatus('❌ Failed to save credentials: ' + error.message)
-      return
-    }
-
-    setShowCredentialForm(false)
-    let clarityJson: any = {}
-    try { if (clarityText) clarityJson = JSON.parse(clarityText) } catch {
-      setStatus('⚠️ JSON invalid')
-      return
-    }
-
-    // --- STRICT FACTORY SELECTION ---
+    
+    // Determine platform from systems
     const systems: string[] = clarityJson.systems || []
     const supportedCRMs = ['GoHighLevel', 'ActiveCampaign', 'HubSpot']
-    
-    // Only use CRM factory if ALL systems in the list are in our supported whitelist
     const isPureCRM = systems.length > 0 && systems.every(s => supportedCRMs.includes(s.trim()))
-
-    if (isPureCRM) {
-      setStatus('🏭 Supported CRM detected. Sending to CRM Factory...')
-      
-      const crmPayload = {
-        client_id: clientId,
-        client_name: clientName,
-        automation_plan: clarityJson,
-        credentials_provided: credentialValues
-      }
-      
-      console.log('CRM Factory Payload Dispatch:', crmPayload)
-      
-      // TODO: Actual fetch call to CRM API would go here
-      setStatus('✅ Sent to CRM Factory')
-      setTimeout(() => { router.push(`/clients/${clientId}/dashboard`) }, 1500)
-    } else {
+    
+    if (!isPureCRM) {
       setStatus('🤖 External systems detected. Sending to n8n...')
       try {
         await fetch('https://sorcer.app.n8n.cloud/webhook/3eaf76d7-01e2-40f7-b004-07ff942b666a', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(clarityJson) // Sends ONLY clarity JSON to n8n
+          body: JSON.stringify(clarityJson)
         })
         setStatus('✅ Sent to n8n factory')
         setTimeout(() => { router.push(`/clients/${clientId}/dashboard`) }, 1200)
       } catch (err) {
         setStatus('⚠️ Webhook error')
       }
+      return
     }
+    
+    // Determine platform code
+    let platform = 'ghl'
+    if (systems.some(s => s.includes('HubSpot'))) platform = 'hubspot'
+    if (systems.some(s => s.includes('ActiveCampaign'))) platform = 'ac'
+    
+    // Build natural language prompt from clarity
+    const taskPrompt = `Create an automation with the following requirements:
+Goal: ${clarityJson.business_goal || clarityJson.goal}
+Trigger: ${clarityJson.trigger || clarityJson.event}
+Systems: ${systems.join(', ')}
+Success Condition: ${clarityJson.success_condition || clarityJson.success_event || clarityJson.success || clarityJson.goal_met || 'N/A'}
+Constraints: ${clarityJson.constraints || clarityJson.limitations || 'None'}
+${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}`
+    
+    setStatus('🚀 Sending task to CRM...')
+    
+    // Validate and prepare credentials - preserve full token without truncation
+    // Get raw values directly from Supabase response
+    const rawAccessToken = clientData.ghl_access_token;
+    const rawLocationId = clientData.ghl_location_id;
+    
+    // Convert to string only if needed, preserve full length
+    const accessToken = (rawAccessToken != null ? String(rawAccessToken) : '').trim();
+    const locationId = (rawLocationId != null ? String(rawLocationId) : '').trim();
+    
+    // Log full credentials for debugging - show complete token
+    console.log('Full credentials from Supabase:', {
+      raw_token: rawAccessToken,
+      raw_token_type: typeof rawAccessToken,
+      raw_token_length: rawAccessToken?.length || 0,
+      processed_token: accessToken,
+      processed_token_length: accessToken.length,
+      location_id: locationId,
+      // Log first 50 and last 50 chars to verify full token
+      token_start: accessToken.substring(0, Math.min(50, accessToken.length)),
+      token_end: accessToken.length > 50 ? accessToken.substring(accessToken.length - 50) : 'N/A'
+    })
+    
+    // Log credentials being sent to CRM
+    console.log('Sending credentials to CRM:', {
+      has_access_token: !!accessToken,
+      has_location_id: !!locationId,
+      access_token_length: accessToken.length,
+      location_id: locationId,
+      access_token_preview: accessToken ? `${accessToken.substring(0, 20)}...${accessToken.substring(Math.max(0, accessToken.length - 10))}` : 'empty'
+    })
+    
+    if (!accessToken || !locationId) {
+      setStatus('❌ Invalid credentials: Access token or location ID is missing or empty')
+      return
+    }
+    
+    try {
+      // Prepare payload with full credentials - no truncation
+      const payload = {
+        client_id: clientId,
+        client_name: clientName,
+        platform: platform,
+        task_prompt: taskPrompt,
+        clarity_json: clarityJson,
+        credentials: {
+          access_token: accessToken, // Full token preserved
+          location_id: locationId
+        }
+      };
+      
+      // Log payload to verify full token is being sent
+      console.log('Payload being sent (token length):', payload.credentials.access_token.length);
+      console.log('Full access token being sent:', payload.credentials.access_token);
+      
+      // Send task to CRM - use environment variable or fallback to localhost
+      const crmUrl = process.env.NEXT_PUBLIC_CRM_URL || 'http://localhost:3002'
+      const response = await fetch(`${crmUrl}/api/task`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      
+      if (!response.ok) {
+        throw new Error(`CRM server error: ${response.statusText}`)
+      }
+      
+      const result = await response.json()
+      
+      if (result.task_id) {
+        setStatus('✅ Task sent to CRM. Waiting for execution...')
+        setTaskStatus('executing')
+        
+        // Clear confirmation state since task is now executing
+        setAwaitingConfirmation(false)
+        setClarityText(null)
+        
+        // Poll for results
+        pollTaskStatus(result.task_id)
+      } else {
+        setStatus('❌ Failed to create task: ' + (result.error || 'Unknown error'))
+      }
+    } catch (err: any) {
+      setStatus('❌ Error connecting to CRM: ' + err.message)
+      console.error('CRM connection error:', err)
+    }
+  }
+  
+  const pollTaskStatus = async (taskId: string) => {
+    const maxAttempts = 120 // 10 minutes max (5 second intervals)
+    let attempts = 0
+    
+    const poll = async () => {
+      try {
+        const crmUrl = process.env.NEXT_PUBLIC_CRM_URL || 'http://localhost:3002'
+        const response = await fetch(`${crmUrl}/api/task/${taskId}/status`)
+        if (!response.ok) {
+          throw new Error('Failed to fetch task status')
+        }
+        
+        const data = await response.json()
+        
+        if (data.status === 'completed') {
+          setTaskStatus('completed')
+          setExecutionResult(data.summary || 'Task completed successfully')
+          setStatus('✅ Execution completed!')
+          // Don't save summary to chat - it's shown on the right side
+        } else if (data.status === 'failed') {
+          setTaskStatus('failed')
+          // Simplify error message for non-technical users
+          const simplifiedError = simplifyErrorMessage(data.error || 'Task execution failed')
+          setExecutionResult(simplifiedError)
+          setStatus('❌ Execution failed')
+          // Don't save error to chat - it's shown on the right side
+        } else if (data.status === 'running') {
+          setStatus(`⏳ Executing... (${data.progress || 0}%)`)
+          attempts++
+          if (attempts < maxAttempts) {
+            setTimeout(poll, 5000) // Poll every 5 seconds
+          } else {
+            setStatus('⏱️ Execution taking longer than expected...')
+          }
+        }
+      } catch (err: any) {
+        console.error('Polling error:', err)
+        attempts++
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 5000)
+        } else {
+          setStatus('❌ Failed to get task status')
+        }
+      }
+    }
+    
+    poll()
   }
 
   // --- HELPER: Renders JSON Clarity into Plain English ---
@@ -275,7 +403,6 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
     }
   }
 
-  const toggleField = (key: string) => setShowField(prev => ({ ...prev, [key]: !prev[key] }))
   const handleContinueClarifying = () => { setAwaitingConfirmation(false); setClarityText(null); }
 
   if (authLoading) return <div style={{ color: '#38bdf8', padding: 40, background: '#020617', minHeight: '100vh' }}>Verifying...</div>
@@ -323,15 +450,14 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
           <div ref={messagesEndRef} />
         </div>
 
-        {!showCredentialForm && (
-          <div className="glass-panel" style={{ padding: 20, borderRadius: 16, background: 'rgba(2, 6, 23, 0.8)', position: 'relative' }}>
-            <textarea placeholder={awaitingConfirmation ? "Selection active on right..." : "Type strategy or clarification..."} value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} disabled={awaitingConfirmation} style={{ width: '100%', background: 'transparent', border: 'none', color: '#fff', fontSize: 15, outline: 'none', resize: 'none', height: 80, marginBottom: 10 }} />
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-               <span style={{ fontSize: 11, color: colors.accent, opacity: 0.6 }}>{status || 'System ready'}</span>
-               <button onClick={handleSend} disabled={awaitingConfirmation || !input.trim()} className="btn-primary">Send Message</button>
-            </div>
+        {/* Input area - always visible */}
+        <div className="glass-panel" style={{ padding: 20, borderRadius: 16, background: 'rgba(2, 6, 23, 0.8)', position: 'relative' }}>
+          <textarea placeholder={awaitingConfirmation ? "Selection active on right..." : "Type strategy or clarification..."} value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} disabled={awaitingConfirmation || taskStatus === 'executing'} style={{ width: '100%', background: 'transparent', border: 'none', color: '#fff', fontSize: 15, outline: 'none', resize: 'none', height: 80, marginBottom: 10 }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+             <span style={{ fontSize: 11, color: colors.accent, opacity: 0.6 }}>{status || 'System ready'}</span>
+             <button onClick={handleSend} disabled={awaitingConfirmation || taskStatus === 'executing' || !input.trim()} className="btn-primary">Send Message</button>
           </div>
-        )}
+        </div>
       </div>
 
       {/* RIGHT COLUMN: ACTIONS & OUTPUTS */}
@@ -356,40 +482,40 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
           </div>
         )}
 
-        {/* CREDENTIAL INTAKE FORM */}
-        {showCredentialForm && (
-          <div className="glass-panel" style={{ padding: 30, borderRadius: 24, background: colors.glass, animation: 'fadeIn 0.5s ease' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 25 }}>
-               <div style={{ width: 12, height: 12, borderRadius: '50%', background: colors.accent }}></div>
-               <h3 style={{ margin: 0, fontSize: 20 }}>Credential Requirements</h3>
-            </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 20, marginBottom: 30 }}>
-              {credentialRequirements.map((c, idx) => (
-                <div key={idx} style={{ padding: 20, borderRadius: 16, background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <label style={{ color: colors.accent, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', display: 'block', marginBottom: 15 }}>{c.system} Access</label>
-                  {c.fields?.map((f: string) => {
-                    const key = `${c.system}:${f}`
-                    return (
-                      <div key={f} style={{ marginBottom: 15 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                          <small style={{ color: colors.textMuted }}>{f}</small>
-                          <button onClick={() => toggleField(key)} style={{ background: 'none', border: 'none', color: colors.accent, fontSize: 10, cursor: 'pointer' }}>{showField[key] ? 'HIDE' : 'SHOW'}</button>
-                        </div>
-                        <input type={showField[key] ? 'text' : 'password'} onChange={e => setCredentialValues(prev => ({ ...prev, [key]: e.target.value }))} style={{ width: '100%', padding: '12px', background: '#020617', border: `1px solid ${colors.border}`, borderRadius: 8, color: '#fff', outline: 'none' }} />
-                      </div>
-                    )
-                  })}
-                </div>
-              ))}
+        {/* EXECUTION STATUS - Show when task is executing */}
+        {taskStatus === 'executing' && (
+          <div className="glass-panel" style={{ padding: 30, borderRadius: 24, background: colors.glass, animation: 'fadeIn 0.5s ease', marginBottom: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+               <div className="thinking-orb" style={{ width: 40, height: 40 }}></div>
+               <h3 style={{ margin: 0, fontSize: 20 }}>Task Executing</h3>
             </div>
-
-            <button onClick={saveCredentials} className="btn-primary" style={{ width: '100%' }}>Securely Save & Finish</button>
+            <div style={{ background: 'rgba(0,0,0,0.4)', padding: 20, borderRadius: 16, border: `1px solid ${colors.border}` }}>
+              <p style={{ fontSize: 14, color: colors.accent, margin: 0 }}>{status || 'Processing in CRM...'}</p>
+            </div>
           </div>
         )}
 
-        {/* LOADING ORB */}
-        {!awaitingConfirmation && !showCredentialForm && (
+        {/* EXECUTION RESULT - Show when task completes or fails */}
+        {executionResult && (
+          <div className="glass-panel" style={{ padding: 30, borderRadius: 24, background: colors.glass, animation: 'fadeIn 0.5s ease' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+               <div style={{ width: 12, height: 12, borderRadius: '50%', background: taskStatus === 'failed' ? '#ef4444' : taskStatus === 'completed' ? '#22c55e' : '#fbbf24' }}></div>
+               <h3 style={{ margin: 0, fontSize: 20 }}>Execution Result</h3>
+            </div>
+            <div style={{ background: 'rgba(0,0,0,0.4)', padding: 25, borderRadius: 16, border: `1px solid ${colors.border}`, marginBottom: 20 }}>
+              <div style={{ color: taskStatus === 'failed' ? '#ef4444' : taskStatus === 'completed' ? '#22c55e' : '#fbbf24', fontSize: 14, lineHeight: '1.6', whiteSpace: 'pre-wrap' }}>
+                {executionResult}
+              </div>
+            </div>
+            <button onClick={() => { setTaskStatus(''); setExecutionResult(null); setStatus(''); }} className="btn-primary" style={{ width: '100%' }}>
+              Clear Result
+            </button>
+          </div>
+        )}
+
+        {/* LOADING ORB - Show when no active task and not awaiting confirmation */}
+        {!awaitingConfirmation && !taskStatus && !executionResult && (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div style={{ textAlign: 'center' }}>
                {status === 'Thinking...' ? (
