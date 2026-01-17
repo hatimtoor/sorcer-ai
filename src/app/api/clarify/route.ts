@@ -12,7 +12,7 @@ export async function POST(req: Request) {
     })
 
     const systemPrompt = `
-You are a senior automation consultant.
+You are a senior automation consultantttttttt.
 
 Your job:
 - Ask clarifying questions until the automation is fully understood.
