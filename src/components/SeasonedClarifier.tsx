@@ -7,18 +7,22 @@ import { useRouter } from 'next/navigation'
 interface Message {
   id: string
   message: string
-  sender: 'staff' | 'ai'
+  sender: string
   created_at: string
+  workflow_id?: string | null
 }
 
 interface Props {
   clientId: string
   clientName: string
+  workflow?: any  // Workflow data from Supabase
+  workflowName?: string  // Workflow name from URL
 }
 
-export default function SeasonedClarifier({ clientId, clientName }: Props) {
+export default function SeasonedClarifier({ clientId, clientName, workflow, workflowName }: Props) {
   // ---------- AUTH ----------
   const [session, setSession] = useState<any | null>(null)
+  const [userRole, setUserRole] = useState<string>('staff')
   const [authLoading, setAuthLoading] = useState(true)
   const router = useRouter()
 
@@ -41,8 +45,28 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
   useEffect(() => {
     const check = async () => {
       const { data } = await supabase.auth.getSession()
-      if (!data?.session) router.replace('/login')
-      else setSession(data.session)
+      if (!data?.session) {
+        router.replace('/login')
+        return
+      }
+      setSession(data.session)
+      
+      if (data.session.user?.email) {
+        const { data: staffData, error: staffError } = await supabase
+          .from('staff')
+          .select('role')
+          .eq('email', data.session.user.email)
+          .maybeSingle()
+        
+        if (!staffError && staffData?.role) {
+          setUserRole(staffData.role)
+        } else {
+          setUserRole('staff')
+        }
+      } else {
+        setUserRole('staff')
+      }
+      
       setAuthLoading(false)
     }
     check()
@@ -57,16 +81,86 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
   useEffect(() => {
     if (!clientId) return
     const fetchMessages = async () => {
+      // STRATEGY:
+      // 1. If no workflow selected -> Empty chat (new automation)
+      // 2. If workflow selected -> Only load messages with EXACT workflow_id match
+      // 3. Always add workflow context message if editing a workflow
+      
+      if (!workflow?.workflow_id) {
+        // New automation - start completely empty
+        setMessages([])
+        return
+      }
+      
+      // Editing a workflow - ONLY load messages with this exact workflow_id
+      // Do NOT include messages with null workflow_id (those are old/general messages)
       const { data, error } = await supabase
         .from('client_messages')
         .select('*')
         .eq('client_id', clientId)
+        .eq('workflow_id', workflow.workflow_id)  // STRICT: Only exact matches
         .order('created_at', { ascending: true })
-      if (error) setStatus(`Supabase error: ${error.message}`)
-      else setMessages(data || [])
+      
+      if (error) {
+        console.error('Error loading messages:', error)
+        setStatus(`Supabase error: ${error.message}`)
+        setMessages([])
+        return
+      }
+      
+      // Start with loaded messages (only messages for this workflow)
+      let initialMessages: Message[] = data || []
+      
+      // Add workflow context message at the beginning if it doesn't exist
+      if (workflowName && workflow) {
+        const workflowContextMessage = `I want to edit the workflow "${workflowName}". 
+
+Workflow Details:
+- Name: ${workflow.name}
+- Description: ${workflow.description || 'No description available'}
+- Status: ${workflow.status || 'draft'}
+- Version: ${workflow.version || 1}
+
+This workflow is already created in GoHighLevel. What changes would you like to make?`
+        
+        // Check if context message already exists
+        const contextExists = initialMessages.some(msg => 
+          msg.workflow_id === workflow.workflow_id && 
+          msg.sender !== 'ai' && 
+          msg.message.includes(`edit the workflow "${workflowName}"`)
+        )
+        
+        if (!contextExists) {
+          const { data: contextData, error: contextError } = await supabase
+            .from('client_messages')
+            .insert([{
+              client_id: clientId,
+              message: workflowContextMessage,
+              sender: userRole,
+              workflow_id: workflow.workflow_id
+            }])
+            .select()
+          
+          if (contextError) {
+            const workflowContext: Message = {
+              id: `workflow-context-${Date.now()}`,
+              message: workflowContextMessage,
+              sender: userRole,
+              created_at: new Date().toISOString(),
+              workflow_id: workflow.workflow_id
+            }
+            initialMessages = [workflowContext, ...initialMessages]
+          } else if (contextData && contextData[0]) {
+            initialMessages = [contextData[0], ...initialMessages]
+          }
+        }
+      }
+      
+      setMessages(initialMessages)
     }
+    
     fetchMessages()
-  }, [clientId])
+  }, [clientId, workflow?.workflow_id, workflowName, userRole])
 
 
   // ---------- SEND MESSAGE ----------
@@ -74,9 +168,17 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
     if (!input.trim() || awaitingConfirmation || taskStatus === 'executing') return
 
     setStatus('Saving your message...')
+    
+    const workflowIdToSave = workflow?.workflow_id || null
+    
     const { data: staffData, error: staffError } = await supabase
       .from('client_messages')
-      .insert([{ client_id: clientId, message: input, sender: 'staff' }])
+      .insert([{ 
+        client_id: clientId, 
+        message: input, 
+        sender: userRole,
+        workflow_id: workflowIdToSave
+      }])
       .select()
 
     if (staffError) {
@@ -92,7 +194,17 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
     const response = await fetch('/api/clarify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: [...messages, newStaffMsg] })
+      body: JSON.stringify({ 
+        messages: [...messages, newStaffMsg],
+        workflow: workflow ? {
+          workflow_id: workflow.workflow_id,
+          name: workflow.name,
+          description: workflow.description,
+          status: workflow.status,
+          version: workflow.version,
+          payload: workflow.payload  // Include full workflow JSON payload
+        } : null  // Pass complete workflow context including payload to API
+      })
     })
 
     const result = await response.json()
@@ -110,12 +222,18 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
       // Don't save the JSON clarity to chat - only save the user-friendly message before CLARITY_READY
       const userFriendlyPart = aiText.split('CLARITY_READY')[0].trim()
       if (userFriendlyPart) {
+        const aiWorkflowId = workflow?.workflow_id || null
         const { data: aiData, error: aiError } = await supabase
           .from('client_messages')
-          .insert([{ client_id: clientId, message: userFriendlyPart, sender: 'ai' }])
+          .insert([{ 
+            client_id: clientId, 
+            message: userFriendlyPart, 
+            sender: 'ai',
+            workflow_id: aiWorkflowId
+          }])
           .select()
         
-        if (!aiError && aiData) {
+        if (!aiError && aiData && aiData[0]) {
           setMessages(prev => [...prev, aiData[0]])
         }
       }
@@ -123,9 +241,15 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
       return
     }
 
+    const finalWorkflowId = workflow?.workflow_id || null
     const { data: aiData, error: aiError } = await supabase
       .from('client_messages')
-      .insert([{ client_id: clientId, message: aiText, sender: 'ai' }])
+      .insert([{ 
+        client_id: clientId, 
+        message: aiText, 
+        sender: 'ai',
+        workflow_id: finalWorkflowId
+      }])
       .select()
 
     if (aiError) {
@@ -133,7 +257,9 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
       return
     }
 
-    setMessages(prev => [...prev, aiData![0]])
+    if (aiData && aiData[0]) {
+      setMessages(prev => [...prev, aiData[0]])
+    }
     setStatus('')
   }
 
@@ -153,7 +279,7 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
 
     let clarityJson: any = {}
     try { clarityJson = JSON.parse(clarityText) } catch {}
-    
+
     setAwaitingConfirmation(false)
     setStatus('Fetching client credentials...')
     
@@ -168,12 +294,12 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
       setStatus('❌ Failed to load client credentials: ' + (clientError?.message || 'Client not found'))
       return
     }
-    
+
     if (!clientData.ghl_access_token || !clientData.ghl_location_id) {
       setStatus('❌ Client credentials missing. Please add GHL access token and location ID.')
       return
     }
-    
+
     // Log full token length to check if it's complete
     console.log('Full token from Supabase:', {
       token_length: clientData.ghl_access_token?.length || 0,
@@ -187,7 +313,7 @@ export default function SeasonedClarifier({ clientId, clientName }: Props) {
     const systems: string[] = clarityJson.systems || []
     const supportedCRMs = ['GoHighLevel', 'ActiveCampaign', 'HubSpot']
     const isPureCRM = systems.length > 0 && systems.every(s => supportedCRMs.includes(s.trim()))
-    
+
     if (!isPureCRM) {
       setStatus('🤖 External systems detected. Sending to n8n...')
       try {
@@ -257,6 +383,10 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
     }
     
     try {
+      // Get Supabase credentials to pass to CRM for workflow storage
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      
       // Prepare payload with full credentials - no truncation
       const payload = {
         client_id: clientId,
@@ -267,6 +397,10 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
         credentials: {
           access_token: accessToken, // Full token preserved
           location_id: locationId
+        },
+        supabase: {
+          url: supabaseUrl,
+          key: supabaseKey
         }
       };
       
@@ -394,7 +528,13 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
           setTaskStatus('completed')
           setExecutionResult(data.summary || 'Task completed successfully')
           setStatus('✅ Execution completed!')
-          // Don't save summary to chat - it's shown on the right side
+          
+          if (!workflow?.workflow_id) {
+            const createdWorkflowId = await updateMessagesWithWorkflowId()
+            if (createdWorkflowId) {
+              console.log('[Chat] Updated messages with workflow_id:', createdWorkflowId)
+            }
+          }
         } else if (data.status === 'failed') {
           setTaskStatus('failed')
           // Use summary if available (contains natural language error), otherwise simplify error message
@@ -424,6 +564,59 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
     }
     
     poll()
+  }
+
+  const updateMessagesWithWorkflowId = async (): Promise<string | null> => {
+    try {
+      const { data: workflows, error } = await supabase
+        .from('workflows')
+        .select('workflow_id, created_at')
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+      
+      if (error || !workflows || workflows.length === 0) {
+        return null
+      }
+      
+      const newWorkflowId = workflows[0].workflow_id
+      const workflowCreatedAt = new Date(workflows[0].created_at)
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000)
+      
+      if (workflowCreatedAt < tenMinutesAgo) {
+        return null
+      }
+      
+      const { data: messagesToUpdate, error: fetchError } = await supabase
+        .from('client_messages')
+        .select('id')
+        .eq('client_id', clientId)
+        .is('workflow_id', null)
+        .gte('created_at', tenMinutesAgo.toISOString())
+      
+      if (fetchError || !messagesToUpdate || messagesToUpdate.length === 0) {
+        return null
+      }
+      
+      const messageIds = messagesToUpdate.map(msg => msg.id)
+      
+      const { error: updateError } = await supabase
+        .from('client_messages')
+        .update({ workflow_id: newWorkflowId })
+        .in('id', messageIds)
+      
+      if (updateError) {
+        return null
+      }
+      
+      setMessages(prev => prev.map(msg => 
+        messageIds.includes(msg.id) ? { ...msg, workflow_id: newWorkflowId } : msg
+      ))
+      
+      return newWorkflowId
+    } catch (err) {
+      return null
+    }
   }
 
   // --- HELPER: Renders JSON Clarity into Plain English ---
@@ -512,8 +705,8 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
 
         <div style={{ flex: 1, overflowY: 'auto', marginBottom: 20, paddingRight: 10, display: 'flex', flexDirection: 'column', gap: 16 }}>
           {messages.map(msg => (
-            <div key={msg.id} style={{ padding: '14px 18px', borderRadius: 16, maxWidth: '85%', fontSize: 14, lineHeight: '1.5', background: msg.sender === 'staff' ? colors.userBubble : colors.aiBubble, alignSelf: msg.sender === 'staff' ? 'flex-end' : 'flex-start', border: `1px solid ${msg.sender === 'staff' ? 'rgba(56, 189, 248, 0.3)' : 'rgba(255,255,255,0.05)'}`, boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-              <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4, fontWeight: 700, textTransform: 'uppercase' }}>{msg.sender === 'staff' ? 'Project Manager' : 'Sorcer AI'}</div>
+            <div key={msg.id} style={{ padding: '14px 18px', borderRadius: 16, maxWidth: '85%', fontSize: 14, lineHeight: '1.5', background: msg.sender === 'ai' ? colors.aiBubble : colors.userBubble, alignSelf: msg.sender === 'ai' ? 'flex-start' : 'flex-end', border: `1px solid ${msg.sender === 'ai' ? 'rgba(255,255,255,0.05)' : 'rgba(56, 189, 248, 0.3)'}`, boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+              <div style={{ fontSize: 10, opacity: 0.5, marginBottom: 4, fontWeight: 700, textTransform: 'uppercase' }}>{msg.sender === 'ai' ? 'Sorcer AI' : msg.sender}</div>
               <div>{msg.message}</div>
             </div>
           ))}
@@ -521,13 +714,13 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
         </div>
 
         {/* Input area - always visible */}
-        <div className="glass-panel" style={{ padding: 20, borderRadius: 16, background: 'rgba(2, 6, 23, 0.8)', position: 'relative' }}>
+          <div className="glass-panel" style={{ padding: 20, borderRadius: 16, background: 'rgba(2, 6, 23, 0.8)', position: 'relative' }}>
           <textarea placeholder={awaitingConfirmation ? "Selection active on right..." : "Type strategy or clarification..."} value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} disabled={awaitingConfirmation || taskStatus === 'executing'} style={{ width: '100%', background: 'transparent', border: 'none', color: '#fff', fontSize: 15, outline: 'none', resize: 'none', height: 80, marginBottom: 10 }} />
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-             <span style={{ fontSize: 11, color: colors.accent, opacity: 0.6 }}>{status || 'System ready'}</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+               <span style={{ fontSize: 11, color: colors.accent, opacity: 0.6 }}>{status || 'System ready'}</span>
              <button onClick={handleSend} disabled={awaitingConfirmation || taskStatus === 'executing' || !input.trim()} className="btn-primary">Send Message</button>
+            </div>
           </div>
-        </div>
       </div>
 
       {/* RIGHT COLUMN: ACTIONS & OUTPUTS */}
@@ -563,7 +756,7 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
             <div style={{ background: 'rgba(0,0,0,0.4)', padding: 20, borderRadius: 16, border: `1px solid ${colors.border}` }}>
               <p style={{ fontSize: 14, color: colors.accent, margin: 0 }}>{status || 'Processing in CRM...'}</p>
             </div>
-          </div>
+            </div>
         )}
 
         {/* EXECUTION RESULT - Show when task completes or fails */}
@@ -572,12 +765,12 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
                <div style={{ width: 12, height: 12, borderRadius: '50%', background: taskStatus === 'failed' ? '#ef4444' : taskStatus === 'completed' ? '#22c55e' : '#fbbf24' }}></div>
                <h3 style={{ margin: 0, fontSize: 20 }}>Execution Result</h3>
-            </div>
+                        </div>
             <div style={{ background: 'rgba(0,0,0,0.4)', padding: 25, borderRadius: 16, border: `1px solid ${colors.border}`, marginBottom: 20 }}>
               <div style={{ color: taskStatus === 'failed' ? '#ef4444' : taskStatus === 'completed' ? '#22c55e' : '#fbbf24', fontSize: 14, lineHeight: '1.6', whiteSpace: 'pre-wrap' }}>
                 {executionResult}
-              </div>
-            </div>
+                      </div>
+                </div>
             <button onClick={() => { setTaskStatus(''); setExecutionResult(null); setStatus(''); }} className="btn-primary" style={{ width: '100%' }}>
               Clear Result
             </button>

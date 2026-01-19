@@ -5,11 +5,41 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
 
 export async function POST(req: Request) {
   try {
-    const { messages } = await req.json()
+    const { messages, workflow } = await req.json()
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.5-pro'
     })
+
+    // Build workflow context if provided
+    let workflowContext = ''
+    if (workflow) {
+      const workflowPayload = workflow.payload ? JSON.stringify(workflow.payload, null, 2) : 'No workflow structure available'
+      workflowContext = `
+      
+WORKFLOW CONTEXT:
+You are editing an existing workflow named "${workflow.name || 'Unnamed Workflow'}".
+Workflow ID: ${workflow.workflow_id}
+Description: ${workflow.description || 'No description available'}
+Status: ${workflow.status || 'draft'}
+Version: ${workflow.version || 1}
+
+CURRENT WORKFLOW STRUCTURE (JSON):
+${workflowPayload}
+
+IMPORTANT INSTRUCTIONS:
+1. You have access to the complete workflow JSON structure above
+2. When the user wants to edit this workflow, acknowledge that you understand they want to edit "${workflow.name}"
+3. Reference the current workflow structure when discussing changes
+4. Ask what specific changes they want to make
+5. Once you have the edit requirements, the system will automatically:
+   - Load the workflow from storage
+   - Apply the changes using AI
+   - Save the updated workflow
+
+The workflow editing will be handled automatically - you just need to collect the edit requirements from the user and reference the current workflow structure when needed.
+`
+    }
 
     const systemPrompt = `
 You are a senior automation consultant.
@@ -58,7 +88,7 @@ IMPORTANT RULES:
 - Do NOT add commentary before or after
 - Do NOT assume approval
 - For simple tag/field/list creation, set trigger to "Direct action"
-- The summary must be precise and implementation-ready
+- The summary must be precise and implementation-ready${workflowContext}
 `
 
     const formattedMessages = [

@@ -1,17 +1,9 @@
 'use client'
 
-import { use, useEffect, useState, useMemo } from 'react'
+import { use, useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import { useAuthGuard } from '@/hooks/useAuthGuard'
-
-interface Automation {
-  id: string
-  name: string | null
-  clarity: any
-  confirmed: boolean
-  created_at: string
-}
 
 interface Client {
   id: string
@@ -28,15 +20,18 @@ interface Credential {
   created_at: string
 }
 
-function generateAutomationName(clarity: any): string {
-  if (!clarity) return 'New Automation'
-  const goal = clarity.business_goal || clarity.goal || ''
-  const trigger = clarity.trigger || clarity.event || ''
-  const systems = clarity.systems?.join(', ') || ''
-  if (goal) return goal
-  if (trigger) return `Triggered by ${trigger}`
-  if (systems) return `Automation for ${systems}`
-  return 'New Automation'
+interface Workflow {
+  id: number
+  workflow_id: string
+  client_id: string
+  location_id: string | null
+  name: string
+  description: string | null
+  payload: any
+  version: number
+  status: string
+  created_at: string
+  updated_at: string
 }
 
 export default function ClientDashboard({ params }: { params: Promise<{ clientId: string }> }) {
@@ -45,48 +40,21 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
   const { loading: authLoading } = useAuthGuard()
 
   const [client, setClient] = useState<Client | null>(null)
-  const [automations, setAutomations] = useState<Automation[]>([])
-  const [selectedAutoId, setSelectedAutoId] = useState<string | null>(null)
   const [credentials, setCredentials] = useState<Credential[]>([])
   const [visibleCreds, setVisibleCreds] = useState<Record<string, boolean>>({})
+  const [workflows, setWorkflows] = useState<Workflow[]>([])
+  const [workflowsExpanded, setWorkflowsExpanded] = useState(false)
   
   // Credentials Edit State
   const [editingCredId, setEditingCredId] = useState<string | null>(null)
   const [editCredName, setEditCredName] = useState('')
   const [editCredValue, setEditCredValue] = useState('')
 
-  // Automations Edit State
-  const [editingAutoId, setEditingAutoId] = useState<string | null>(null)
-  const [editAutoName, setEditAutoName] = useState('')
-
-  const [autosExpanded, setAutosExpanded] = useState(false)
   const [credsExpanded, setCredsExpanded] = useState(false)
-
-  const selected = useMemo(() => 
-    automations.find(a => a.id === selectedAutoId) || null
-  , [selectedAutoId, automations])
 
   const loadClient = async () => {
     const { data } = await supabase.from('clients').select('*').eq('id', clientId).single()
     if (data) setClient(data)
-  }
-
-  const loadAutomations = async () => {
-    const { data } = await supabase
-      .from('automation_clarity')
-      .select('*')
-      .eq('client_id', clientId)
-      .order('created_at', { ascending: false })
-    if (!data) return
-    for (const a of data) {
-      if (!a.name) {
-        const auto = generateAutomationName(a.clarity)
-        await supabase.from('automation_clarity').update({ name: auto }).eq('id', a.id)
-        a.name = auto
-      }
-    }
-    setAutomations(data)
-    if (!selectedAutoId && data.length > 0) setSelectedAutoId(data[0].id)
   }
 
   const loadCredentials = async () => {
@@ -94,34 +62,35 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
     if (data) setCredentials(data)
   }
 
+  const loadWorkflows = async () => {
+    const { data, error } = await supabase
+      .from('workflows')
+      .select('*')
+      .eq('client_id', clientId)
+      .order('created_at', { ascending: false })
+    if (error) {
+      console.error('Error loading workflows:', error)
+      return
+    }
+    if (data) setWorkflows(data)
+  }
+
   useEffect(() => {
     if (!authLoading) {
       loadClient()
-      loadAutomations()
       loadCredentials()
+      loadWorkflows()
     }
   }, [clientId, authLoading])
 
-  const displayedAutos = autosExpanded ? automations : automations.slice(0, 5);
+  const handleWorkflowClick = (workflow: Workflow) => {
+    // Navigate to chat page with workflow context
+    router.push(`/dashboard/${clientId}?workflow_id=${workflow.workflow_id}&workflow_name=${encodeURIComponent(workflow.name)}`)
+  }
+
   const displayedCreds = credsExpanded ? credentials : credentials.slice(0, 3);
 
   const toggleCredVisibility = (id: string) => setVisibleCreds(prev => ({ ...prev, [id]: !prev[id] }))
-
-  /* --- AUTOMATION ACTIONS --- */
-  const performAutoSave = async (id: string) => {
-    const { error } = await supabase.from('automation_clarity').update({ name: editAutoName }).eq('id', id)
-    if (error) {
-      alert(`Error updating automation: ${error.message}`)
-      return
-    }
-    setAutomations(prev => prev.map(a => a.id === id ? { ...a, name: editAutoName } : a))
-    setEditingAutoId(null)
-  }
-
-  const handleAutoKeyDown = (e: React.KeyboardEvent, id: string) => {
-    if (e.key === 'Enter') performAutoSave(id)
-    else if (e.key === 'Escape') setEditingAutoId(null)
-  }
 
   /* --- CREDENTIAL ACTIONS --- */
   const saveCredentialUpdate = async (id: string) => {
@@ -159,18 +128,6 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
       return
     }
     setCredentials(prev => prev.filter(c => c.id !== id))
-  }
-
-  const deleteAutomation = async (e: React.MouseEvent, id: string) => {
-    e.stopPropagation(); 
-    if (!confirm('Delete this automation permanently?')) return
-    const { error } = await supabase.from('automation_clarity').delete().eq('id', id)
-    if (error) {
-      alert(`Could not delete: ${error.message}`)
-      return
-    }
-    setAutomations(prev => prev.filter(a => a.id !== id))
-    if (selectedAutoId === id) setSelectedAutoId(null)
   }
 
   const colors = {
@@ -227,37 +184,61 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
           <main style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 320px) 1fr', gap: 24, alignItems: 'start' }}>
             
             <aside style={{ background: 'rgba(15, 23, 42, 0.4)', border: `1px solid ${colors.border}`, borderRadius: 16, padding: 16 }}>
-              <h3 style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', marginBottom: 16, letterSpacing: '0.1em' }}>Workflows</h3>
-              {displayedAutos.map(a => (
-                <div key={a.id} onClick={() => setSelectedAutoId(a.id)} style={{ padding: '12px', marginBottom: 8, borderRadius: 10, cursor: 'pointer', background: selectedAutoId === a.id ? 'rgba(56, 189, 248, 0.1)' : 'transparent', border: `1px solid ${selectedAutoId === a.id ? colors.accent : 'transparent'}` }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                    {editingAutoId === a.id ? (
-                      <div style={{ display: 'flex', gap: 4, flex: 1 }}>
-                        <input autoFocus className="auto-input" value={editAutoName} onChange={(e) => setEditAutoName(e.target.value)} onKeyDown={(e) => handleAutoKeyDown(e, a.id)} onClick={(e) => e.stopPropagation()} />
-                        <button onClick={(e) => { e.stopPropagation(); performAutoSave(a.id); }} style={{ background: 'none', border: 'none', cursor: 'pointer' }}>✅</button>
+              <h3 style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', marginBottom: 16, letterSpacing: '0.1em' }}>GoHighLevel Workflows</h3>
+                {workflows.length === 0 ? (
+                  <p style={{ fontSize: 12, color: colors.textMuted, fontStyle: 'italic' }}>No workflows yet</p>
+                ) : (
+                  <>
+                    {(workflowsExpanded ? workflows : workflows.slice(0, 5)).map(w => (
+                      <div 
+                        key={w.id} 
+                        onClick={() => handleWorkflowClick(w)}
+                        style={{ 
+                          padding: '12px', 
+                          marginBottom: 8, 
+                          borderRadius: 10, 
+                          cursor: 'pointer', 
+                          background: 'rgba(56, 189, 248, 0.05)',
+                          border: `1px solid ${colors.border}`,
+                          transition: 'all 0.2s'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = 'rgba(56, 189, 248, 0.1)'
+                          e.currentTarget.style.borderColor = colors.accent
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = 'rgba(56, 189, 248, 0.05)'
+                          e.currentTarget.style.borderColor = colors.border
+                        }}
+                      >
+                        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{w.name}</div>
+                        {w.description && (
+                          <div style={{ fontSize: 11, color: colors.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {w.description}
+                          </div>
+                        )}
+                        <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 4 }}>
+                          {w.status === 'draft' ? '📝 Draft' : w.status === 'active' ? '✅ Active' : '📋 ' + w.status}
+                        </div>
                       </div>
-                    ) : (
-                      <div style={{ flex: 1, overflow: 'hidden' }}>
-                        <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Untitled'}</div>
-                      </div>
+                    ))}
+                    {workflows.length > 5 && (
+                      <button 
+                        onClick={() => setWorkflowsExpanded(!workflowsExpanded)}
+                        className="expand-action-bar"
+                        style={{ marginTop: 8 }}
+                      >
+                        {workflowsExpanded ? 'Show Less' : `Show All (${workflows.length})`}
+                      </button>
                     )}
-                    <div style={{ display: 'flex', gap: 4 }}>
-                      {editingAutoId !== a.id && <button className="icon-btn" style={{ fontSize: 12 }} onClick={(e) => { e.stopPropagation(); setEditingAutoId(a.id); setEditAutoName(a.name || ''); }}>✏️</button>}
-                      <button onClick={(e) => deleteAutomation(e, a.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 14 }}>🗑️</button>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                  </>
+                )}
             </aside>
 
             <section style={{ display: 'flex', flexDirection: 'column', gap: 24, minWidth: 0 }}>
               <div style={{ background: colors.card, border: `1px solid ${colors.border}`, borderRadius: 16, padding: 24 }}>
-                <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Workflow Details</h3>
-                {selected ? (
-                  <pre style={{ background: 'rgba(2, 6, 23, 0.6)', padding: 16, borderRadius: 12, fontSize: 12, color: colors.textMuted, maxHeight: '400px', overflow: 'auto', border: '1px solid rgba(255,255,255,0.05)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                    {JSON.stringify(selected.clarity, null, 2)}
-                  </pre>
-                ) : <p style={{ color: colors.textMuted }}>Select a workflow.</p>}
+                <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Workflow Information</h3>
+                <p style={{ color: colors.textMuted }}>Click on a workflow from the sidebar to edit it, or create a new workflow using the chatbot.</p>
               </div>
 
               <div style={{ background: colors.card, border: `1px solid ${colors.border}`, borderRadius: 16, padding: 24 }}>

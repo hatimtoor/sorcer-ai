@@ -1,6 +1,6 @@
 'use client'
 
-import { useParams } from 'next/navigation'
+import { useParams, useSearchParams } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase/client'
 import SeasonedClarifier from '@/components/SeasonedClarifier'
@@ -12,9 +12,13 @@ interface Client {
 
 export default function ClientClarifierPage() {
   const params = useParams()
+  const searchParams = useSearchParams()
   const clientId = params?.clientId as string | undefined
+  const workflowId = searchParams?.get('workflow_id')
+  const workflowName = searchParams?.get('workflow_name')
 
   const [client, setClient] = useState<Client | null>(null)
+  const [workflow, setWorkflow] = useState<any>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -45,29 +49,48 @@ export default function ClientClarifierPage() {
     )
   }
 
-  // Fetch client info
+  // Fetch client info and workflow if workflow_id is provided
   useEffect(() => {
-    const fetchClient = async () => {
+    const fetchData = async () => {
       setLoading(true)
 
-      const { data, error } = await supabase
+      // Fetch client
+      const { data: clientData, error: clientError } = await supabase
         .from('clients')
         .select('id, full_name')
         .eq('id', clientId)
         .single()
 
-      if (error) {
-        console.error('Supabase error:', error)
+      if (clientError) {
+        console.error('Supabase error:', clientError)
         setError('Failed to load client information.')
-      } else {
-        setClient(data)
+        setLoading(false)
+        return
+      }
+      
+      setClient(clientData)
+
+      // Fetch workflow if workflow_id is provided
+      if (workflowId && clientId) {
+        const { data: workflowData, error: workflowError } = await supabase
+          .from('workflows')
+          .select('*')
+          .eq('workflow_id', workflowId)
+          .eq('client_id', clientId)
+          .single()
+
+        if (!workflowError && workflowData) {
+          setWorkflow(workflowData)
+        } else {
+          console.warn('Workflow not found:', workflowError)
+        }
       }
 
       setLoading(false)
     }
 
-    fetchClient()
-  }, [clientId])
+    fetchData()
+  }, [clientId, workflowId])
 
   if (loading) {
     return (
@@ -91,6 +114,8 @@ export default function ClientClarifierPage() {
     <SeasonedClarifier
       clientId={client.id}
       clientName={client.full_name}
+      workflow={workflow}
+      workflowName={workflowName || undefined}
     />
   )
 }
