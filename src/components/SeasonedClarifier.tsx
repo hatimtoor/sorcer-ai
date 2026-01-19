@@ -307,6 +307,75 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
     }
   }
   
+  // Helper function to simplify error messages for non-technical users
+  const simplifyErrorMessage = (error: string): string => {
+    if (!error) return 'Something went wrong. Please try again or contact support.'
+    
+    let errorStr = String(error)
+    
+    // Remove Python tracebacks
+    if (errorStr.includes('Traceback') || errorStr.includes('File "') || errorStr.includes('line ')) {
+      if (errorStr.includes('WebDriverException') || errorStr.includes('Browser window not found')) {
+        return 'The automation tool encountered a browser issue. Please make sure the CRM application is running properly and try again.'
+      }
+      if (errorStr.includes('timeout') || errorStr.includes('Timeout')) {
+        return 'The task took too long to complete. Please try again or contact support if the issue persists.'
+      }
+      if (errorStr.includes('selenium') || errorStr.includes('WebDriver')) {
+        return 'An automation browser error occurred. Please try again or contact support.'
+      }
+      return 'An automation error occurred. Please try again or contact support.'
+    }
+    
+    // Remove technical jargon
+    let simplified = errorStr
+      .replace(/API|api|endpoint|request|response|HTTP|status code/gi, '')
+      .replace(/401|403|404|500|502|503/gi, '')
+      .replace(/selenium|WebDriver|chrome|browser|driver/gi, '')
+      .replace(/\.py|\.js|line \d+|File "/gi, '')
+      .replace(/Traceback|Stacktrace|Exception|Error:/gi, '')
+      .replace(/\{.*?\}|\[.*?\]/g, '') // Remove JSON objects/arrays
+      .replace(/at .*?\(.*?\)/g, '') // Remove stack trace lines
+      .trim()
+    
+    // Common error patterns
+    if (errorStr.includes('Location mismatch') || (errorStr.includes('location_id') && errorStr.includes('redirected'))) {
+      return 'The system tried to access a different location than expected. This usually happens when your browser has saved login information for a different location. Please clear your browser data or use a different browser profile.'
+    }
+    if (errorStr.includes('Chrome profile') && (errorStr.includes('redirected') || errorStr.includes('saved location'))) {
+      return 'The browser opened to a different location than expected. This happens when your saved browser session is for a different location. Please clear your browser data or contact support.'
+    }
+    if (errorStr.includes('Invalid') && (errorStr.includes('token') || errorStr.includes('credential') || errorStr.includes('Private Integration token'))) {
+      return 'Your access credentials are invalid. Please check your GoHighLevel access token and location ID in the client settings.'
+    }
+    if (simplified.includes('not found') || simplified.includes('does not exist')) {
+      return 'The requested item was not found. Please check if it exists in your CRM system.'
+    }
+    if (simplified.includes('permission') || simplified.includes('unauthorized') || simplified.includes('forbidden')) {
+      return 'You do not have permission to perform this action. Please check your account permissions.'
+    }
+    if (simplified.includes('connection') || simplified.includes('network') || simplified.includes('ECONNREFUSED')) {
+      return 'Unable to connect to the CRM system. Please check your internet connection and try again.'
+    }
+    if (simplified.includes('timeout') || simplified.includes('ETIMEDOUT')) {
+      return 'The request took too long. Please check your connection and try again.'
+    }
+    if (errorStr.includes('Browser window not found') || errorStr.includes('window is not accessible')) {
+      return 'The automation tool could not access the browser window. Please make sure the CRM application is running and try again.'
+    }
+    if (errorStr.includes('Chrome driver') && errorStr.includes('initialization')) {
+      return 'The automation tool could not start properly. Please restart the CRM application and try again.'
+    }
+    
+    // If simplified is too short or empty, return a generic message
+    if (simplified.length < 10) {
+      return 'An unexpected error occurred. Please try again or contact support.'
+    }
+    
+    // Return simplified version, but limit length
+    return simplified.length > 200 ? simplified.substring(0, 200) + '...' : simplified
+  }
+
   const pollTaskStatus = async (taskId: string) => {
     const maxAttempts = 120 // 10 minutes max (5 second intervals)
     let attempts = 0
@@ -328,12 +397,13 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
           // Don't save summary to chat - it's shown on the right side
         } else if (data.status === 'failed') {
           setTaskStatus('failed')
-          // Simplify error message for non-technical users
-          const simplifiedError = simplifyErrorMessage(data.error || 'Task execution failed')
-          setExecutionResult(simplifiedError)
+          // Use summary if available (contains natural language error), otherwise simplify error message
+          const errorMessage = data.summary || simplifyErrorMessage(data.error || 'Task execution failed')
+          setExecutionResult(errorMessage)
           setStatus('❌ Execution failed')
           // Don't save error to chat - it's shown on the right side
         } else if (data.status === 'running') {
+          setTaskStatus('executing')
           setStatus(`⏳ Executing... (${data.progress || 0}%)`)
           attempts++
           if (attempts < maxAttempts) {
