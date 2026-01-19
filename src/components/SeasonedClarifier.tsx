@@ -401,7 +401,10 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
         supabase: {
           url: supabaseUrl,
           key: supabaseKey
-        }
+        },
+        // Include workflow_id if editing an existing workflow
+        workflow_id: workflow?.workflow_id || null,
+        workflow_name: workflow?.name || null
       };
       
       // Log payload to verify full token is being sent
