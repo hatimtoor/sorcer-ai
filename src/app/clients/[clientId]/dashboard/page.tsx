@@ -10,6 +10,7 @@ interface Automation {
   name: string | null
   clarity: any
   confirmed: boolean
+  factory_type: string | null
   created_at: string
 }
 
@@ -59,6 +60,7 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
   const [editingAutoId, setEditingAutoId] = useState<string | null>(null)
   const [editAutoName, setEditAutoName] = useState('')
 
+  // PAGINATION STATE (RESTORED)
   const [autosExpanded, setAutosExpanded] = useState(false)
   const [credsExpanded, setCredsExpanded] = useState(false)
 
@@ -72,11 +74,14 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
   }
 
   const loadAutomations = async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('automation_clarity')
       .select('*')
       .eq('client_id', clientId)
       .order('created_at', { ascending: false })
+    
+    if (error) { console.error("Fetch error:", error.message); return; }
+
     if (!data) return
     for (const a of data) {
       if (!a.name) {
@@ -102,18 +107,16 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
     }
   }, [clientId, authLoading])
 
-  const displayedAutos = autosExpanded ? automations : automations.slice(0, 5);
-  const displayedCreds = credsExpanded ? credentials : credentials.slice(0, 3);
+  // --- RESTORED: SLICING LOGIC ---
+  const displayedAutos = autosExpanded ? automations : automations.slice(0, 5)
+  const displayedCreds = credsExpanded ? credentials : credentials.slice(0, 3)
 
   const toggleCredVisibility = (id: string) => setVisibleCreds(prev => ({ ...prev, [id]: !prev[id] }))
 
   /* --- AUTOMATION ACTIONS --- */
   const performAutoSave = async (id: string) => {
     const { error } = await supabase.from('automation_clarity').update({ name: editAutoName }).eq('id', id)
-    if (error) {
-      alert(`Error updating automation: ${error.message}`)
-      return
-    }
+    if (error) { alert(`Error updating automation: ${error.message}`); return; }
     setAutomations(prev => prev.map(a => a.id === id ? { ...a, name: editAutoName } : a))
     setEditingAutoId(null)
   }
@@ -125,19 +128,8 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
 
   /* --- CREDENTIAL ACTIONS --- */
   const saveCredentialUpdate = async (id: string) => {
-    // 1. Database Update First
-    const { error } = await supabase
-      .from('credentials')
-      .update({ name: editCredName, value: editCredValue })
-      .eq('id', id)
-
-    if (error) {
-      console.error('Credential Update Error:', error)
-      alert(`Failed to save credential: ${error.message}`)
-      return
-    }
-
-    // 2. Only update UI if DB succeeds
+    const { error } = await supabase.from('credentials').update({ name: editCredName, value: editCredValue }).eq('id', id)
+    if (error) { alert(`Failed to save credential: ${error.message}`); return; }
     setCredentials(prev => prev.map(c => c.id === id ? { ...c, name: editCredName, value: editCredValue } : c))
     setEditingCredId(null)
   }
@@ -154,10 +146,7 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
   const deleteCredential = async (id: string) => {
     if (!confirm('Delete this credential permanently?')) return
     const { error } = await supabase.from('credentials').delete().eq('id', id)
-    if (error) {
-      alert(`Error: ${error.message}`)
-      return
-    }
+    if (error) { alert(`Error: ${error.message}`); return; }
     setCredentials(prev => prev.filter(c => c.id !== id))
   }
 
@@ -165,10 +154,7 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
     e.stopPropagation(); 
     if (!confirm('Delete this automation permanently?')) return
     const { error } = await supabase.from('automation_clarity').delete().eq('id', id)
-    if (error) {
-      alert(`Could not delete: ${error.message}`)
-      return
-    }
+    if (error) { alert(`Could not delete: ${error.message}`); return; }
     setAutomations(prev => prev.filter(a => a.id !== id))
     if (selectedAutoId === id) setSelectedAutoId(null)
   }
@@ -190,16 +176,42 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .dashboard-container { animation: fadeIn 0.5s ease-out; width: 100%; max-width: 100vw; overflow-x: hidden; }
         
-        .expand-action-bar { 
-          width: 100%; margin-top: 16px; padding: 12px; background: rgba(15, 23, 42, 0.8); 
-          border: 1px solid ${colors.border}; border-radius: 8px; color: #38bdf8 !important; 
-          font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; 
-          cursor: pointer; transition: 0.2s; display: flex; align-items: center; justify-content: center;
-        }
-        .expand-action-bar:hover { background: rgba(56, 189, 248, 0.1); color: #fff !important; }
         .icon-btn { opacity: 0.5; transition: 0.2s; cursor: pointer; background: none; border: none; color: #fff; padding: 4px; }
         .icon-btn:hover { opacity: 1; transform: scale(1.1); }
         .auto-input { background: #000; color: #fff; border: 1px solid ${colors.accent}; padding: 6px 10px; border-radius: 6px; font-size: 12px; width: 100%; outline: none; }
+        .refine-btn { 
+          background: rgba(56, 189, 248, 0.1); 
+          color: ${colors.accent}; 
+          border: 1px solid ${colors.accent}; 
+          padding: 8px 16px; 
+          border-radius: 8px; 
+          font-size: 11px; 
+          font-weight: 800; 
+          text-transform: uppercase; 
+          letter-spacing: 0.05em; 
+          cursor: pointer; 
+          transition: 0.2s; 
+        }
+        .refine-btn:hover { background: ${colors.accent}; color: #000; transform: translateY(-1px); box-shadow: 0 0 15px rgba(56, 189, 248, 0.4); }
+        
+        /* NEW: EXPAND BUTTON STYLE */
+        .expand-action-bar {
+          width: 100%;
+          margin-top: 10px;
+          padding: 10px;
+          background: rgba(255, 255, 255, 0.03);
+          border: 1px dashed ${colors.border};
+          border-radius: 8px;
+          color: ${colors.accent};
+          font-weight: 700;
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          cursor: pointer;
+          transition: 0.2s;
+          text-align: center;
+        }
+        .expand-action-bar:hover { background: rgba(56, 189, 248, 0.1); }
       `}</style>
 
       {authLoading ? (
@@ -226,6 +238,7 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
 
           <main style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 320px) 1fr', gap: 24, alignItems: 'start' }}>
             
+            {/* --- LEFT: AUTOMATION LIST --- */}
             <aside style={{ background: 'rgba(15, 23, 42, 0.4)', border: `1px solid ${colors.border}`, borderRadius: 16, padding: 16 }}>
               <h3 style={{ fontSize: 11, color: colors.textMuted, textTransform: 'uppercase', marginBottom: 16, letterSpacing: '0.1em' }}>Workflows</h3>
               {displayedAutos.map(a => (
@@ -248,11 +261,37 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
                   </div>
                 </div>
               ))}
+              
+              {/* RESTORED: See More Button */}
+              {automations.length > 5 && (
+                <button 
+                  onClick={() => setAutosExpanded(!autosExpanded)} 
+                  className="expand-action-bar"
+                >
+                  {autosExpanded ? 'See Less' : `See More (${automations.length - 5})`}
+                </button>
+              )}
             </aside>
 
+            {/* --- RIGHT: DETAILS & CREDENTIALS --- */}
             <section style={{ display: 'flex', flexDirection: 'column', gap: 24, minWidth: 0 }}>
+              
+              {/* DETAILS CARD */}
               <div style={{ background: colors.card, border: `1px solid ${colors.border}`, borderRadius: 16, padding: 24 }}>
-                <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>Workflow Details</h3>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                  <h3 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Workflow Details</h3>
+                  
+                  {/* REFINE BUTTON (CRM ONLY) */}
+                  {selected?.factory_type === 'crm' && (
+                    <button 
+                      onClick={() => router.push(`/clients/${clientId}/clarify?editId=${selected.id}`)}
+                      className="refine-btn"
+                    >
+                      ✏️ Refine Build Logic
+                    </button>
+                  )}
+                </div>
+
                 {selected ? (
                   <pre style={{ background: 'rgba(2, 6, 23, 0.6)', padding: 16, borderRadius: 12, fontSize: 12, color: colors.textMuted, maxHeight: '400px', overflow: 'auto', border: '1px solid rgba(255,255,255,0.05)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
                     {JSON.stringify(selected.clarity, null, 2)}
@@ -260,6 +299,7 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
                 ) : <p style={{ color: colors.textMuted }}>Select a workflow.</p>}
               </div>
 
+              {/* CREDENTIALS CARD */}
               <div style={{ background: colors.card, border: `1px solid ${colors.border}`, borderRadius: 16, padding: 24 }}>
                 <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>System Credentials</h3>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
@@ -296,6 +336,17 @@ export default function ClientDashboard({ params }: { params: Promise<{ clientId
                     )
                   })}
                 </div>
+                
+                {/* RESTORED: See More Button */}
+                {credentials.length > 3 && (
+                  <button 
+                    onClick={() => setCredsExpanded(!credsExpanded)} 
+                    className="expand-action-bar"
+                    style={{ marginTop: 24 }}
+                  >
+                    {credsExpanded ? 'See Less' : `See More (${credentials.length - 3})`}
+                  </button>
+                )}
               </div>
             </section>
           </main>
