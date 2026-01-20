@@ -299,18 +299,111 @@ This workflow is already created in GoHighLevel. What changes would you like to 
 
     let clarityJson: any = {}
     try { clarityJson = JSON.parse(clarityText) } catch {}
-
+    
     const systems: string[] = clarityJson.systems || []
     const supportedCRMs = ['GoHighLevel', 'ActiveCampaign', 'HubSpot']
-    const isPureCRM = systems.length > 0 && systems.every(s => supportedCRMs.includes(s.trim()))
+    const isPureCRM = systems.length > 0 && systems.every(s => {
+      const sLower = s.toLowerCase().trim()
+      return supportedCRMs.some(crm => sLower.includes(crm.toLowerCase()))
+    })
     
     let platform = 'ghl'
-    if (systems.some(s => s.includes('HubSpot'))) platform = 'hubspot'
-    if (systems.some(s => s.includes('ActiveCampaign'))) platform = 'ac'
+    if (systems.some(s => s.toLowerCase().includes('hubspot'))) platform = 'hubspot'
+    if (systems.some(s => s.toLowerCase().includes('activecampaign'))) platform = 'ac'
+    const isGHL = platform === 'ghl' || systems.some(s => s.toLowerCase().includes('gohighlevel') || s.toLowerCase().includes('ghl'))
+    const hasSupportedCRM = systems.some(s => {
+      const sLower = s.toLowerCase().trim()
+      return supportedCRMs.some(crm => sLower.includes(crm.toLowerCase()))
+    })
 
-    const isGHL = platform === 'ghl' || systems.some(s => s.includes('GoHighLevel'))
+    if (isGHL) {
+      setAwaitingConfirmation(false)
+      setStatus('Fetching client credentials...')
+      
+      const { data: clientData, error: clientError } = await supabase
+        .from('clients')
+        .select('ghl_access_token, ghl_location_id')
+        .eq('id', clientId)
+        .single()
+      
+      if (clientError || !clientData) {
+        setStatus('❌ Failed to load client credentials: ' + (clientError?.message || 'Client not found'))
+        return
+      }
 
-    if (!isPureCRM) {
+      if (!clientData.ghl_access_token || !clientData.ghl_location_id) {
+        setStatus('❌ Client credentials missing. Please add GHL access token and location ID.')
+        return
+      }
+
+      const rawAccessToken = clientData.ghl_access_token
+      const rawLocationId = clientData.ghl_location_id
+      const accessToken = (rawAccessToken != null ? String(rawAccessToken) : '').trim()
+      const locationId = (rawLocationId != null ? String(rawLocationId) : '').trim()
+
+      if (!accessToken || !locationId) {
+        setStatus('❌ Invalid credentials: Access token or location ID is missing or empty')
+        return
+      }
+
+      const taskPrompt = `Create an automation with the following requirements:
+Goal: ${clarityJson.business_goal || clarityJson.goal}
+Trigger: ${clarityJson.trigger || clarityJson.event}
+Systems: ${systems.join(', ')}
+Success Condition: ${clarityJson.success_condition || clarityJson.success_event || clarityJson.success || clarityJson.goal_met || 'N/A'}
+Constraints: ${clarityJson.constraints || clarityJson.limitations || 'None'}
+${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}`
+      
+      setStatus('🚀 Creating task in queue...')
+      
+      try {
+        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+        const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+        
+        const { data: taskData, error: taskError } = await supabase
+          .from('tasks')
+          .insert([{
+            client_id: clientId,
+            location_id: locationId,
+            status: 'pending',
+            task_data: {
+              client_id: clientId,
+              client_name: clientName,
+              platform: 'ghl',
+              task_prompt: taskPrompt,
+              clarity_json: clarityJson,
+              credentials: {
+                access_token: accessToken,
+                location_id: locationId
+              },
+              supabase: {
+                url: supabaseUrl,
+                key: supabaseKey
+              },
+              workflow_id: workflow?.workflow_id || null,
+              workflow_name: workflow?.name || null
+            }
+          }])
+          .select()
+          .single()
+        
+        if (taskError) {
+          throw new Error(`Failed to create task: ${taskError.message}`)
+        }
+        
+        setStatus('✅ Task queued. Waiting for execution...')
+        setTaskStatus('executing')
+        setAwaitingConfirmation(false)
+        setClarityText(null)
+        pollTaskStatus(taskData.id)
+      } catch (err: any) {
+        setStatus('❌ Error creating task: ' + err.message)
+        console.error('Task creation error:', err)
+      }
+      return
+    }
+
+    if (!isPureCRM && !hasSupportedCRM) {
       setAwaitingConfirmation(false)
       setStatus('🤖 External systems detected. Sending to n8n...')
       try {
@@ -327,163 +420,21 @@ This workflow is already created in GoHighLevel. What changes would you like to 
       return
     }
 
-    if (!isGHL) {
-      setAwaitingConfirmation(false)
-      setStatus('Detecting required credentials...')
-      const detected = await detectCredentialRequirementsFromGemini({
-        systems: clarityJson.systems,
-        business_goal: clarityJson.business_goal
-      })
-      
-      const nonGHLRequirements = detected.filter((c: any) => 
-        !c.system.toLowerCase().includes('gohighlevel') && 
-        !c.system.toLowerCase().includes('ghl')
-      )
-      
-      if (nonGHLRequirements.length > 0) {
-        setCredentialRequirements(nonGHLRequirements)
-        setShowCredentialForm(true)
-        setStatus('Please enter credentials for the required systems.')
-        return
-      }
-    }
+    setStatus('Detecting required credentials...')
+    const detected = await detectCredentialRequirementsFromGemini({
+      systems: clarityJson.systems,
+      business_goal: clarityJson.business_goal
+    })
+    
+    const nonGHLRequirements = detected.filter((c: any) => 
+      !c.system.toLowerCase().includes('gohighlevel') && 
+      !c.system.toLowerCase().includes('ghl')
+    )
 
+    setCredentialRequirements(nonGHLRequirements)
+    setShowCredentialForm(nonGHLRequirements.length > 0)
     setAwaitingConfirmation(false)
-    setStatus('Fetching client credentials...')
-    
-    const { data: clientData, error: clientError } = await supabase
-      .from('clients')
-      .select('ghl_access_token, ghl_location_id')
-      .eq('id', clientId)
-      .single()
-    
-    if (clientError || !clientData) {
-      setStatus('❌ Failed to load client credentials: ' + (clientError?.message || 'Client not found'))
-      return
-    }
-
-    if (!clientData.ghl_access_token || !clientData.ghl_location_id) {
-      setStatus('❌ Client credentials missing. Please add GHL access token and location ID.')
-      return
-    }
-
-    // Log full token length to check if it's complete
-    console.log('Full token from Supabase:', {
-      token_length: clientData.ghl_access_token?.length || 0,
-      token_type: typeof clientData.ghl_access_token,
-      token_starts_with: clientData.ghl_access_token?.substring(0, 20) || 'empty',
-      token_ends_with: clientData.ghl_access_token?.substring(clientData.ghl_access_token.length - 20) || 'empty',
-      full_token: clientData.ghl_access_token // Log full token for debugging
-    })
-    
-    
-    // Build natural language prompt from clarity
-    const taskPrompt = `Create an automation with the following requirements:
-Goal: ${clarityJson.business_goal || clarityJson.goal}
-Trigger: ${clarityJson.trigger || clarityJson.event}
-Systems: ${systems.join(', ')}
-Success Condition: ${clarityJson.success_condition || clarityJson.success_event || clarityJson.success || clarityJson.goal_met || 'N/A'}
-Constraints: ${clarityJson.constraints || clarityJson.limitations || 'None'}
-${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}`
-    
-    setStatus('🚀 Sending task to CRM...')
-    
-    // Validate and prepare credentials - preserve full token without truncation
-    // Get raw values directly from Supabase response
-    const rawAccessToken = clientData.ghl_access_token;
-    const rawLocationId = clientData.ghl_location_id;
-    
-    // Convert to string only if needed, preserve full length
-    const accessToken = (rawAccessToken != null ? String(rawAccessToken) : '').trim();
-    const locationId = (rawLocationId != null ? String(rawLocationId) : '').trim();
-    
-    // Log full credentials for debugging - show complete token
-    console.log('Full credentials from Supabase:', {
-      raw_token: rawAccessToken,
-      raw_token_type: typeof rawAccessToken,
-      raw_token_length: rawAccessToken?.length || 0,
-      processed_token: accessToken,
-      processed_token_length: accessToken.length,
-      location_id: locationId,
-      // Log first 50 and last 50 chars to verify full token
-      token_start: accessToken.substring(0, Math.min(50, accessToken.length)),
-      token_end: accessToken.length > 50 ? accessToken.substring(accessToken.length - 50) : 'N/A'
-    })
-    
-    // Log credentials being sent to CRM
-    console.log('Sending credentials to CRM:', {
-      has_access_token: !!accessToken,
-      has_location_id: !!locationId,
-      access_token_length: accessToken.length,
-      location_id: locationId,
-      access_token_preview: accessToken ? `${accessToken.substring(0, 20)}...${accessToken.substring(Math.max(0, accessToken.length - 10))}` : 'empty'
-    })
-    
-    if (!accessToken || !locationId) {
-      setStatus('❌ Invalid credentials: Access token or location ID is missing or empty')
-      return
-    }
-    
-    try {
-      // Get Supabase credentials to pass to CRM for workflow storage
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-      
-      // Prepare payload with full credentials - no truncation
-      const payload = {
-        client_id: clientId,
-        client_name: clientName,
-        platform: platform,
-        task_prompt: taskPrompt,
-        clarity_json: clarityJson,
-        credentials: {
-          access_token: accessToken, // Full token preserved
-          location_id: locationId
-        },
-        supabase: {
-          url: supabaseUrl,
-          key: supabaseKey
-        },
-        // Include workflow_id if editing an existing workflow
-        workflow_id: workflow?.workflow_id || null,
-        workflow_name: workflow?.name || null
-      };
-      
-      // Log payload to verify full token is being sent
-      console.log('Payload being sent (token length):', payload.credentials.access_token.length);
-      console.log('Full access token being sent:', payload.credentials.access_token);
-      
-      // Send task to CRM - use environment variable or fallback to localhost
-      const crmUrl = process.env.NEXT_PUBLIC_CRM_URL || 'http://localhost:3002'
-      const response = await fetch(`${crmUrl}/api/task`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-      
-      if (!response.ok) {
-        throw new Error(`CRM server error: ${response.statusText}`)
-      }
-      
-      const result = await response.json()
-      
-      if (result.task_id) {
-        setStatus('✅ Task sent to CRM. Waiting for execution...')
-        setTaskStatus('executing')
-        
-        // Clear confirmation state since task is now executing
-        setAwaitingConfirmation(false)
-        setClarityText(null)
-        
-        // Poll for results
-        pollTaskStatus(result.task_id)
-      } else {
-        setStatus('❌ Failed to create task: ' + (result.error || 'Unknown error'))
-      }
-    } catch (err: any) {
-      setStatus('❌ Error connecting to CRM: ' + err.message)
-      console.error('CRM connection error:', err)
-    }
+    setStatus(nonGHLRequirements.length > 0 ? 'Clarity saved. Please enter credentials.' : 'Clarity saved.')
   }
   
   // Helper function to simplify error messages for non-technical users
@@ -556,18 +507,24 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
   }
 
   const pollTaskStatus = async (taskId: string) => {
-    const maxAttempts = 120 // 10 minutes max (5 second intervals)
+    const maxAttempts = 120 // 10 minutes max (2 second intervals)
     let attempts = 0
     
     const poll = async () => {
       try {
-        const crmUrl = process.env.NEXT_PUBLIC_CRM_URL || 'http://localhost:3002'
-        const response = await fetch(`${crmUrl}/api/task/${taskId}/status`)
-        if (!response.ok) {
-          throw new Error('Failed to fetch task status')
+        const { data, error } = await supabase
+          .from('tasks')
+          .select('status, summary, error_message')
+          .eq('id', taskId)
+          .single()
+        
+        if (error) {
+          throw new Error('Failed to fetch task status: ' + error.message)
         }
         
-        const data = await response.json()
+        if (!data) {
+          throw new Error('Task not found')
+        }
         
         if (data.status === 'completed') {
           setTaskStatus('completed')
@@ -582,17 +539,15 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
           }
         } else if (data.status === 'failed') {
           setTaskStatus('failed')
-          // Use summary if available (contains natural language error), otherwise simplify error message
-          const errorMessage = data.summary || simplifyErrorMessage(data.error || 'Task execution failed')
+          const errorMessage = data.summary || simplifyErrorMessage(data.error_message || 'Task execution failed')
           setExecutionResult(errorMessage)
           setStatus('❌ Execution failed')
-          // Don't save error to chat - it's shown on the right side
-        } else if (data.status === 'running') {
+        } else if (data.status === 'processing' || data.status === 'pending') {
           setTaskStatus('executing')
-          setStatus(`⏳ Executing... (${data.progress || 0}%)`)
+          setStatus(data.status === 'processing' ? '⏳ Processing...' : '⏳ Waiting in queue...')
           attempts++
           if (attempts < maxAttempts) {
-            setTimeout(poll, 5000) // Poll every 5 seconds
+            setTimeout(poll, 2000) // Poll every 2 seconds
           } else {
             setStatus('⏱️ Execution taking longer than expected...')
           }
@@ -601,7 +556,7 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
         console.error('Polling error:', err)
         attempts++
         if (attempts < maxAttempts) {
-          setTimeout(poll, 5000)
+          setTimeout(poll, 2000)
         } else {
           setStatus('❌ Failed to get task status')
         }
@@ -717,7 +672,6 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
       setStatus('⚠️ No credentials entered')
       return
     }
-    
     const inserts = Object.entries(credentialValues).map(([key, value]) => {
       const [system, field] = key.split(':')
       return { client_id: clientId, name: `${system}:${field}`, value }
@@ -731,93 +685,46 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
 
     setShowCredentialForm(false)
     let clarityJson: any = {}
-    try { 
-      if (clarityText) clarityJson = JSON.parse(clarityText) 
-    } catch {
+    try { if (clarityText) clarityJson = JSON.parse(clarityText) } catch {
       setStatus('⚠️ JSON invalid')
       return
     }
 
     const systems: string[] = clarityJson.systems || []
-    let platform = 'ghl'
-    if (systems.some(s => s.includes('HubSpot'))) platform = 'hubspot'
-    if (systems.some(s => s.includes('ActiveCampaign'))) platform = 'ac'
+    const supportedCRMs = ['GoHighLevel', 'ActiveCampaign', 'HubSpot']
+    
+    const isPureCRM = systems.length > 0 && systems.every(s => {
+      const sLower = s.toLowerCase().trim()
+      return supportedCRMs.some(crm => sLower.includes(crm.toLowerCase()))
+    })
 
-    setStatus('Fetching client credentials...')
-    
-    const { data: clientData, error: clientError } = await supabase
-      .from('clients')
-      .select('ghl_access_token, ghl_location_id')
-      .eq('id', clientId)
-      .single()
-    
-    if (clientError || !clientData) {
-      setStatus('❌ Failed to load client credentials: ' + (clientError?.message || 'Client not found'))
-      return
-    }
-
-    const rawAccessToken = clientData.ghl_access_token || ''
-    const rawLocationId = clientData.ghl_location_id || ''
-    const accessToken = (rawAccessToken != null ? String(rawAccessToken) : '').trim()
-    const locationId = (rawLocationId != null ? String(rawLocationId) : '').trim()
-
-    const taskPrompt = `Create an automation with the following requirements:
-Goal: ${clarityJson.business_goal || clarityJson.goal}
-Trigger: ${clarityJson.trigger || clarityJson.event}
-Systems: ${systems.join(', ')}
-Success Condition: ${clarityJson.success_condition || clarityJson.success_event || clarityJson.success || clarityJson.goal_met || 'N/A'}
-Constraints: ${clarityJson.constraints || clarityJson.limitations || 'None'}
-${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}`
-    
-    setStatus('🚀 Sending task to CRM...')
-    
-    try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-      const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    if (isPureCRM) {
+      setStatus('✅ Supported CRM detected. Sending to CRM Factory...')
       
-      const payload = {
+      const crmPayload = {
         client_id: clientId,
         client_name: clientName,
-        platform: platform,
-        task_prompt: taskPrompt,
-        clarity_json: clarityJson,
-        credentials: {
-          access_token: accessToken,
-          location_id: locationId,
-          ...credentialValues
-        },
-        supabase: {
-          url: supabaseUrl,
-          key: supabaseKey
-        },
-        workflow_id: workflow?.workflow_id || null,
-        workflow_name: workflow?.name || null
+        automation_plan: clarityJson,
+        credentials_provided: credentialValues
       }
       
-      const crmUrl = process.env.NEXT_PUBLIC_CRM_URL || 'http://localhost:3002'
-      const response = await fetch(`${crmUrl}/api/task`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
+      console.log('CRM Factory Payload Dispatch:', crmPayload)
       
-      if (!response.ok) {
-        throw new Error(`CRM server error: ${response.statusText}`)
+      setStatus('✅ Sent to CRM Factory')
+      setTimeout(() => { router.push(`/clients/${clientId}/dashboard`) }, 1500)
+    } else {
+      setStatus('🤖 External systems detected. Sending to n8n...')
+      try {
+        await fetch('https://sorcer.app.n8n.cloud/webhook/3eaf76d7-01e2-40f7-b004-07ff942b666a', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(clarityJson)
+        })
+        setStatus('✅ Sent to n8n factory')
+        setTimeout(() => { router.push(`/clients/${clientId}/dashboard`) }, 1200)
+      } catch (err) {
+        setStatus('⚠️ Webhook error')
       }
-      
-      const result = await response.json()
-      
-      if (result.task_id) {
-        setStatus('✅ Task sent to CRM. Waiting for execution...')
-        setTaskStatus('executing')
-        setClarityText(null)
-        pollTaskStatus(result.task_id)
-      } else {
-        setStatus('❌ Failed to create task: ' + (result.error || 'Unknown error'))
-      }
-    } catch (err: any) {
-      setStatus('❌ Error connecting to CRM: ' + err.message)
-      console.error('CRM connection error:', err)
     }
   }
 
