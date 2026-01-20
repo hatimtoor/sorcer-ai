@@ -35,6 +35,12 @@ export default function SeasonedClarifier({ clientId, clientName, workflow, work
   const [clarityText, setClarityText] = useState<string | null>(null)
   const [awaitingConfirmation, setAwaitingConfirmation] = useState(false)
 
+  // ---------- CREDENTIAL STATE ----------
+  const [credentialRequirements, setCredentialRequirements] = useState<any[]>([])
+  const [credentialValues, setCredentialValues] = useState<Record<string, string>>({})
+  const [showCredentialForm, setShowCredentialForm] = useState(false)
+  const [showField, setShowField] = useState<Record<string, boolean>>({})
+
   // ---------- TASK EXECUTION STATE ----------
   const [taskStatus, setTaskStatus] = useState<string>('')
   const [executionResult, setExecutionResult] = useState<string | null>(null)
@@ -75,7 +81,7 @@ export default function SeasonedClarifier({ clientId, clientName, workflow, work
   // ---------- SCROLL ----------
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, awaitingConfirmation, executionResult])
+  }, [messages, awaitingConfirmation, executionResult, showCredentialForm])
 
   // ---------- LOAD MESSAGES ----------
   useEffect(() => {
@@ -163,9 +169,23 @@ This workflow is already created in GoHighLevel. What changes would you like to 
   }, [clientId, workflow?.workflow_id, workflowName, userRole])
 
 
+  async function detectCredentialRequirementsFromGemini(clarityJson: any) {
+    const res = await fetch('/api/gemini/credential-detection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systems: clarityJson.systems,
+        business_goal: clarityJson.business_goal
+      })
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    return data.credentials || []
+  }
+
   // ---------- SEND MESSAGE ----------
   const handleSend = async () => {
-    if (!input.trim() || awaitingConfirmation || taskStatus === 'executing') return
+    if (!input.trim() || awaitingConfirmation || taskStatus === 'executing' || showCredentialForm) return
 
     setStatus('Saving your message...')
     
@@ -280,10 +300,57 @@ This workflow is already created in GoHighLevel. What changes would you like to 
     let clarityJson: any = {}
     try { clarityJson = JSON.parse(clarityText) } catch {}
 
+    const systems: string[] = clarityJson.systems || []
+    const supportedCRMs = ['GoHighLevel', 'ActiveCampaign', 'HubSpot']
+    const isPureCRM = systems.length > 0 && systems.every(s => supportedCRMs.includes(s.trim()))
+    
+    let platform = 'ghl'
+    if (systems.some(s => s.includes('HubSpot'))) platform = 'hubspot'
+    if (systems.some(s => s.includes('ActiveCampaign'))) platform = 'ac'
+
+    const isGHL = platform === 'ghl' || systems.some(s => s.includes('GoHighLevel'))
+
+    if (!isPureCRM) {
+      setAwaitingConfirmation(false)
+      setStatus('🤖 External systems detected. Sending to n8n...')
+      try {
+        await fetch('https://sorcer.app.n8n.cloud/webhook/3eaf76d7-01e2-40f7-b004-07ff942b666a', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(clarityJson)
+        })
+        setStatus('✅ Sent to n8n factory')
+        setTimeout(() => { router.push(`/clients/${clientId}/dashboard`) }, 1200)
+      } catch (err) {
+        setStatus('⚠️ Webhook error')
+      }
+      return
+    }
+
+    if (!isGHL) {
+      setAwaitingConfirmation(false)
+      setStatus('Detecting required credentials...')
+      const detected = await detectCredentialRequirementsFromGemini({
+        systems: clarityJson.systems,
+        business_goal: clarityJson.business_goal
+      })
+      
+      const nonGHLRequirements = detected.filter((c: any) => 
+        !c.system.toLowerCase().includes('gohighlevel') && 
+        !c.system.toLowerCase().includes('ghl')
+      )
+      
+      if (nonGHLRequirements.length > 0) {
+        setCredentialRequirements(nonGHLRequirements)
+        setShowCredentialForm(true)
+        setStatus('Please enter credentials for the required systems.')
+        return
+      }
+    }
+
     setAwaitingConfirmation(false)
     setStatus('Fetching client credentials...')
     
-    // Get client credentials from Supabase
     const { data: clientData, error: clientError } = await supabase
       .from('clients')
       .select('ghl_access_token, ghl_location_id')
@@ -309,31 +376,6 @@ This workflow is already created in GoHighLevel. What changes would you like to 
       full_token: clientData.ghl_access_token // Log full token for debugging
     })
     
-    // Determine platform from systems
-    const systems: string[] = clarityJson.systems || []
-    const supportedCRMs = ['GoHighLevel', 'ActiveCampaign', 'HubSpot']
-    const isPureCRM = systems.length > 0 && systems.every(s => supportedCRMs.includes(s.trim()))
-
-    if (!isPureCRM) {
-      setStatus('🤖 External systems detected. Sending to n8n...')
-      try {
-        await fetch('https://sorcer.app.n8n.cloud/webhook/3eaf76d7-01e2-40f7-b004-07ff942b666a', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(clarityJson)
-        })
-        setStatus('✅ Sent to n8n factory')
-        setTimeout(() => { router.push(`/clients/${clientId}/dashboard`) }, 1200)
-      } catch (err) {
-        setStatus('⚠️ Webhook error')
-      }
-      return
-    }
-    
-    // Determine platform code
-    let platform = 'ghl'
-    if (systems.some(s => s.includes('HubSpot'))) platform = 'hubspot'
-    if (systems.some(s => s.includes('ActiveCampaign'))) platform = 'ac'
     
     // Build natural language prompt from clarity
     const taskPrompt = `Create an automation with the following requirements:
@@ -669,6 +711,117 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
     }
   }
 
+  const saveCredentials = async () => {
+    setStatus('Saving credentials...')
+    if (Object.keys(credentialValues).length === 0) {
+      setStatus('⚠️ No credentials entered')
+      return
+    }
+    
+    const inserts = Object.entries(credentialValues).map(([key, value]) => {
+      const [system, field] = key.split(':')
+      return { client_id: clientId, name: `${system}:${field}`, value }
+    })
+
+    const { error } = await supabase.from('credentials').insert(inserts)
+    if (error) {
+      setStatus('❌ Failed to save credentials: ' + error.message)
+      return
+    }
+
+    setShowCredentialForm(false)
+    let clarityJson: any = {}
+    try { 
+      if (clarityText) clarityJson = JSON.parse(clarityText) 
+    } catch {
+      setStatus('⚠️ JSON invalid')
+      return
+    }
+
+    const systems: string[] = clarityJson.systems || []
+    let platform = 'ghl'
+    if (systems.some(s => s.includes('HubSpot'))) platform = 'hubspot'
+    if (systems.some(s => s.includes('ActiveCampaign'))) platform = 'ac'
+
+    setStatus('Fetching client credentials...')
+    
+    const { data: clientData, error: clientError } = await supabase
+      .from('clients')
+      .select('ghl_access_token, ghl_location_id')
+      .eq('id', clientId)
+      .single()
+    
+    if (clientError || !clientData) {
+      setStatus('❌ Failed to load client credentials: ' + (clientError?.message || 'Client not found'))
+      return
+    }
+
+    const rawAccessToken = clientData.ghl_access_token || ''
+    const rawLocationId = clientData.ghl_location_id || ''
+    const accessToken = (rawAccessToken != null ? String(rawAccessToken) : '').trim()
+    const locationId = (rawLocationId != null ? String(rawLocationId) : '').trim()
+
+    const taskPrompt = `Create an automation with the following requirements:
+Goal: ${clarityJson.business_goal || clarityJson.goal}
+Trigger: ${clarityJson.trigger || clarityJson.event}
+Systems: ${systems.join(', ')}
+Success Condition: ${clarityJson.success_condition || clarityJson.success_event || clarityJson.success || clarityJson.goal_met || 'N/A'}
+Constraints: ${clarityJson.constraints || clarityJson.limitations || 'None'}
+${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}`
+    
+    setStatus('🚀 Sending task to CRM...')
+    
+    try {
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+      const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      
+      const payload = {
+        client_id: clientId,
+        client_name: clientName,
+        platform: platform,
+        task_prompt: taskPrompt,
+        clarity_json: clarityJson,
+        credentials: {
+          access_token: accessToken,
+          location_id: locationId,
+          ...credentialValues
+        },
+        supabase: {
+          url: supabaseUrl,
+          key: supabaseKey
+        },
+        workflow_id: workflow?.workflow_id || null,
+        workflow_name: workflow?.name || null
+      }
+      
+      const crmUrl = process.env.NEXT_PUBLIC_CRM_URL || 'http://localhost:3002'
+      const response = await fetch(`${crmUrl}/api/task`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      
+      if (!response.ok) {
+        throw new Error(`CRM server error: ${response.statusText}`)
+      }
+      
+      const result = await response.json()
+      
+      if (result.task_id) {
+        setStatus('✅ Task sent to CRM. Waiting for execution...')
+        setTaskStatus('executing')
+        setClarityText(null)
+        pollTaskStatus(result.task_id)
+      } else {
+        setStatus('❌ Failed to create task: ' + (result.error || 'Unknown error'))
+      }
+    } catch (err: any) {
+      setStatus('❌ Error connecting to CRM: ' + err.message)
+      console.error('CRM connection error:', err)
+    }
+  }
+
+  const toggleField = (key: string) => setShowField(prev => ({ ...prev, [key]: !prev[key] }))
   const handleContinueClarifying = () => { setAwaitingConfirmation(false); setClarityText(null); }
 
   if (authLoading) return <div style={{ color: '#38bdf8', padding: 40, background: '#020617', minHeight: '100vh' }}>Verifying...</div>
@@ -716,14 +869,15 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input area - always visible */}
+        {!showCredentialForm && (
           <div className="glass-panel" style={{ padding: 20, borderRadius: 16, background: 'rgba(2, 6, 23, 0.8)', position: 'relative' }}>
-          <textarea placeholder={awaitingConfirmation ? "Selection active on right..." : "Type strategy or clarification..."} value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} disabled={awaitingConfirmation || taskStatus === 'executing'} style={{ width: '100%', background: 'transparent', border: 'none', color: '#fff', fontSize: 15, outline: 'none', resize: 'none', height: 80, marginBottom: 10 }} />
+            <textarea placeholder={awaitingConfirmation ? "Selection active on right..." : "Type strategy or clarification..."} value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} disabled={awaitingConfirmation || taskStatus === 'executing'} style={{ width: '100%', background: 'transparent', border: 'none', color: '#fff', fontSize: 15, outline: 'none', resize: 'none', height: 80, marginBottom: 10 }} />
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                <span style={{ fontSize: 11, color: colors.accent, opacity: 0.6 }}>{status || 'System ready'}</span>
              <button onClick={handleSend} disabled={awaitingConfirmation || taskStatus === 'executing' || !input.trim()} className="btn-primary">Send Message</button>
             </div>
           </div>
+        )}
       </div>
 
       {/* RIGHT COLUMN: ACTIONS & OUTPUTS */}
@@ -748,6 +902,38 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
           </div>
         )}
 
+
+        {/* CREDENTIAL INTAKE FORM */}
+        {showCredentialForm && (
+          <div className="glass-panel" style={{ padding: 30, borderRadius: 24, background: colors.glass, animation: 'fadeIn 0.5s ease' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 25 }}>
+               <div style={{ width: 12, height: 12, borderRadius: '50%', background: colors.accent }}></div>
+               <h3 style={{ margin: 0, fontSize: 20 }}>Credential Requirements</h3>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20, marginBottom: 30 }}>
+              {credentialRequirements.map((c, idx) => (
+                <div key={idx} style={{ padding: 20, borderRadius: 16, background: 'rgba(0,0,0,0.2)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                  <label style={{ color: colors.accent, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', display: 'block', marginBottom: 15 }}>{c.system} Access</label>
+                  {c.fields?.map((f: string) => {
+                    const key = `${c.system}:${f}`
+                    return (
+                      <div key={f} style={{ marginBottom: 15 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                          <small style={{ color: colors.textMuted }}>{f}</small>
+                          <button onClick={() => toggleField(key)} style={{ background: 'none', border: 'none', color: colors.accent, fontSize: 10, cursor: 'pointer' }}>{showField[key] ? 'HIDE' : 'SHOW'}</button>
+                        </div>
+                        <input type={showField[key] ? 'text' : 'password'} onChange={e => setCredentialValues(prev => ({ ...prev, [key]: e.target.value }))} value={credentialValues[key] || ''} style={{ width: '100%', padding: '12px', background: '#020617', border: `1px solid ${colors.border}`, borderRadius: 8, color: '#fff', outline: 'none' }} />
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+
+            <button onClick={saveCredentials} className="btn-primary" style={{ width: '100%' }}>Securely Save & Finish</button>
+          </div>
+        )}
 
         {/* EXECUTION STATUS - Show when task is executing */}
         {taskStatus === 'executing' && (
@@ -781,7 +967,7 @@ ${clarityJson.logic_steps ? `Steps: ${clarityJson.logic_steps.join('; ')}` : ''}
         )}
 
         {/* LOADING ORB - Show when no active task and not awaiting confirmation */}
-        {!awaitingConfirmation && !taskStatus && !executionResult && (
+        {!awaitingConfirmation && !showCredentialForm && !taskStatus && !executionResult && (
           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <div style={{ textAlign: 'center' }}>
                {status === 'Thinking...' ? (
